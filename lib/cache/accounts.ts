@@ -27,8 +27,14 @@ export async function getCachedPages(accountId: string, ttlMs = ACCOUNT_TTL_MS) 
 
 export async function setCachedPages(accountId: string, pages: { id: string; name: string }[]) {
   const now = new Date().toISOString()
-  // Ensure account row exists (FK constraint)
-  await supabase.from('fb_accounts').upsert({ id: accountId, name: accountId, cached_at: now })
+  // Ensure the account row exists for the FK constraint, but NEVER clobber a real
+  // name already cached by setCachedAccounts. A plain upsert here would overwrite
+  // `name` with the id, so when /api/accounts later serves this cache (e.g. on a FB
+  // rate limit) the account selector renders the id instead of the name. ON CONFLICT
+  // DO NOTHING leaves any existing row (and its real name) untouched.
+  await supabase
+    .from('fb_accounts')
+    .upsert({ id: accountId, name: accountId, cached_at: now }, { onConflict: 'id', ignoreDuplicates: true })
   await supabase.from('fb_pages').upsert(
     pages.map(p => ({ id: p.id, account_id: accountId, name: p.name, cached_at: now }))
   )
