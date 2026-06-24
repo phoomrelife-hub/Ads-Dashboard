@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getRules, saveRule, deleteRule } from "@/lib/agents/store";
+import { getRules, saveRule, deleteRule, newId } from "@/lib/agents/store";
 
 export const dynamic = "force-dynamic";
-
-function newId(): string {
-  return crypto.randomUUID().replace(/-/g, '').slice(0, 16)
-}
 
 // GET /api/agents/rules?agentId=... → { rules }
 export async function GET(req: NextRequest) {

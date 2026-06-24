@@ -261,3 +261,25 @@ export async function deleteSession(id: string) {
 function toMessage(r: any) {
   return { id: r.id, sessionId: r.session_id, role: r.role, content: r.content, toolCalls: r.tool_calls, toolResults: r.tool_results, createdAt: r.created_at }
 }
+
+// ── Shared utilities ──────────────────────────────────────────────────────────
+
+export function newId(): string {
+  return typeof crypto !== 'undefined' ? crypto.randomUUID() : Math.random().toString(36).slice(2)
+}
+
+export function toProviderAgent(a: any) {
+  const scopeArr = Array.isArray(a.scope) ? a.scope : [];
+  const accountId = scopeArr[0] || a.scope?.accountId || "";
+  return {
+    ...a,
+    apiKey: a.apiKey || "",
+    spriteId: 0,
+    color: "#5b6cff",
+    deskId: null,
+    pos: { x: a.posX ?? 0, y: a.posY ?? 0 },
+    systemPrompt: a.systemPrompt || "",
+    scope: { accountId },
+    createdAt: a.createdAt ? new Date(a.createdAt).getTime() : Date.now(),
+  };
+}

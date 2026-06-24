@@ -1,25 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAgentWithKey, addLog } from "@/lib/agents/store";
+import { getAgentWithKey, addLog, toProviderAgent } from "@/lib/agents/store";
 import { executeAction } from "@/lib/agents/actions";
 
 export const dynamic = "force-dynamic";
-
-// Adapt db-store agent shape to the Agent type expected by actions.ts
-function toProviderAgent(a: any) {
-  const scopeArr = Array.isArray(a.scope) ? a.scope : []
-  const accountId = scopeArr[0] || a.scope?.accountId || ""
-  return {
-    ...a,
-    apiKey: a.apiKey || "",
-    spriteId: 0,
-    color: "#5b6cff",
-    deskId: null,
-    pos: { x: a.posX ?? 0, y: a.posY ?? 0 },
-    systemPrompt: a.systemPrompt || "",
-    scope: { accountId },
-    createdAt: a.createdAt ? new Date(a.createdAt).getTime() : Date.now(),
-  }
-}
 
 // POST /api/agents/act → execute a CONFIRMED write action.
 // Body: { agentId, tool, args, summary }. Returns { ok, result } or { error }.

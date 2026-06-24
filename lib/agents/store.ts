@@ -17,4 +17,6 @@ export {
   getSession,
   saveSession,
   deleteSession,
+  newId,
+  toProviderAgent,
 } from './db-store'

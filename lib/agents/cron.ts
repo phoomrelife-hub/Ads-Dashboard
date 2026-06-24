@@ -1,7 +1,7 @@
 // Cron engine for Pixel Agents automation rules.
 // Evaluates due rules: structured conditions (via getLevel) and/or a natural-language
 // instruction (via runAgentTurn). Honors per-rule dry-run. Writes outcomes to the log.
-import { getRules, getAgentWithKey, addLog, addRuleRun, saveRule } from "./store";
+import { getRules, getAgentWithKey, addLog, addRuleRun, saveRule, toProviderAgent } from "./store";
 import { getLevel, getAccounts } from "@/lib/fb";
 import { executeAction, rawApply } from "./actions";
 import { runAgentTurn } from "./providers";
@@ -43,23 +43,6 @@ export function isDue(rule: any, now: number): boolean {
   target.setHours(h || 0, mn || 0, 0, 0);
   const tMs = target.getTime();
   return now >= tMs && (!rule.lastRunAt || rule.lastRunAt < tMs);
-}
-
-// Adapt db-store agent shape to the Agent type expected by providers.ts
-function toProviderAgent(a: any) {
-  const scopeArr = Array.isArray(a.scope) ? a.scope : [];
-  const accountId = scopeArr[0] || a.scope?.accountId || "";
-  return {
-    ...a,
-    apiKey: a.apiKey || "",
-    spriteId: 0,
-    color: "#5b6cff",
-    deskId: null,
-    pos: { x: a.posX ?? 0, y: a.posY ?? 0 },
-    systemPrompt: a.systemPrompt || "",
-    scope: { accountId },
-    createdAt: a.createdAt ? new Date(a.createdAt).getTime() : Date.now(),
-  };
 }
 
 // Run a single rule by agentId and ruleId. Returns a human-readable summary; records a structured run.
@@ -154,7 +137,7 @@ export async function runDueRules(agentId: string, forceId?: string): Promise<{ 
   const out: { id: string; name: string; summary: string }[] = [];
   for (const r of due) {
     const summary = await runRule(agentId, r.id, forceId ? "manual" : "schedule");
-    out.push({ id: r.id, name: r.agentId || r.id, summary });
+    out.push({ id: r.id, name: r.name || r.id, summary });
   }
   return out;
 }

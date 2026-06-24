@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAgents, getAgentWithKey, saveAgent, deleteAgent, getOfficeLayout, saveOfficeLayout } from "@/lib/agents/store";
+import { getAgents, getAgent, getAgentWithKey, saveAgent, deleteAgent, getOfficeLayout, saveOfficeLayout, newId } from "@/lib/agents/store";
 
 export const dynamic = "force-dynamic";
-
-function newId(): string {
-  return crypto.randomUUID().replace(/-/g, '').slice(0, 16)
-}
 
 // GET /api/agents → { agents, office }
 export async function GET() {
@@ -35,7 +31,7 @@ export async function POST(req: NextRequest) {
       posX: body.posX ?? body.pos?.x ?? 2,
       posY: body.posY ?? body.pos?.y ?? 2,
     })
-    const agent = await getAgentWithKey(id)
+    const agent = await getAgent(id)
     return NextResponse.json({ agent })
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 })

@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSessions, getSession, saveSession, deleteSession } from "@/lib/agents/store";
+import { getSessions, getSession, saveSession, deleteSession, newId } from "@/lib/agents/store";
 
 export const dynamic = "force-dynamic";
-
-function newId(): string {
-  return crypto.randomUUID().replace(/-/g, '').slice(0, 16)
-}
 
 function lastText(messages: any[]): string {
   const m = [...messages].reverse().find((x: any) => x.content?.trim())
