@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase'
 export async function getAgents() {
   const { data, error } = await supabase
     .from('agents')
-    .select('id,name,role,sprite,provider,model,system_prompt,scope,pos_x,pos_y,created_at,updated_at')
+    .select('id,name,role,sprite,provider,model,system_prompt,scope,pos_x,pos_y,created_at,updated_at,api_key')
     .order('created_at')
   if (error) throw new Error(error.message)
   return (data ?? []).map(toPublicAgent)
@@ -14,7 +14,7 @@ export async function getAgents() {
 export async function getAgent(id: string) {
   const { data, error } = await supabase
     .from('agents')
-    .select('id,name,role,sprite,provider,model,system_prompt,scope,pos_x,pos_y,created_at,updated_at')
+    .select('id,name,role,sprite,provider,model,system_prompt,scope,pos_x,pos_y,created_at,updated_at,api_key')
     .eq('id', id)
     .single()
   if (error) return undefined
@@ -66,6 +66,7 @@ function toPublicAgent(row: any) {
     scope: row.scope ?? [],
     posX: row.pos_x,
     posY: row.pos_y,
+    hasKey: Boolean(row.api_key),
     // apiKey intentionally omitted
   }
 }
@@ -224,20 +225,20 @@ export async function getSession(id: string) {
 export async function saveSession(agentId: string, session: any) {
   const now = new Date().toISOString()
   await supabase.from('sessions').upsert({ id: session.id, agent_id: agentId, title: session.title ?? null, updated_at: now })
-  // Replace messages
-  await supabase.from('chat_messages').delete().eq('session_id', session.id)
-  if (session.messages?.length) {
-    await supabase.from('chat_messages').insert(
-      session.messages.map((m: any) => ({
+  // Atomic message replacement via Postgres function
+  const { error: rpcError } = await supabase.rpc('replace_session_messages', {
+    p_session_id: session.id,
+    p_messages: JSON.parse(JSON.stringify(
+      (session.messages ?? []).map((m: any) => ({
         id: m.id,
-        session_id: session.id,
         role: m.role,
         content: m.content,
-        tool_calls: m.toolCalls ?? null,
-        tool_results: m.toolResults ?? null,
+        toolCalls: m.toolCalls ?? null,
+        toolResults: m.toolResults ?? null,
       }))
-    )
-  }
+    )),
+  })
+  if (rpcError) throw new Error(rpcError.message)
   // Enforce session cap
   const { count } = await supabase.from('sessions').select('*', { count: 'exact', head: true }).eq('agent_id', agentId)
   if ((count ?? 0) > SESSION_CAP) {
