@@ -39,3 +39,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local agent state (contains plaintext API keys) + cached account list
+/agents-store.json
+/accounts-cache.json
+/pages-cache-*.json
