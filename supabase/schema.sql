@@ -17,14 +17,33 @@ create table if not exists agents (
 );
 
 create table if not exists rules (
-  id        text primary key,
-  agent_id  text not null references agents(id) on delete cascade,
-  schedule  text not null default '',
-  condition text not null default '',
-  action    text not null default '',
-  enabled   boolean not null default true,
-  created_at timestamptz not null default now()
+  id          text primary key,
+  agent_id    text references agents(id) on delete cascade,
+  account_id  text not null default '',
+  name        text not null default '',
+  schedule    text not null default '',
+  condition   text not null default '',
+  action      text not null default '',
+  instruction text,
+  level       text not null default 'ad',
+  date_preset text not null default 'today',
+  dry_run     boolean not null default false,
+  enabled     boolean not null default true,
+  last_run_at bigint,
+  last_result text,
+  created_at  timestamptz not null default now()
 );
+
+-- Migration: add missing columns to existing rules table
+alter table rules add column if not exists account_id  text not null default '';
+alter table rules add column if not exists name        text not null default '';
+alter table rules add column if not exists instruction text;
+alter table rules add column if not exists level       text not null default 'ad';
+alter table rules add column if not exists date_preset text not null default 'today';
+alter table rules add column if not exists dry_run     boolean not null default false;
+alter table rules add column if not exists last_run_at bigint;
+alter table rules add column if not exists last_result text;
+alter table rules alter column agent_id drop not null;
 
 create table if not exists rule_runs (
   id        text primary key default gen_random_uuid()::text,
