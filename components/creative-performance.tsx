@@ -83,7 +83,10 @@ function OverlaySelect({ label, value, onChange, children }: {
 
 export function CreativePerformance() {
   const [accounts,    setAccounts]    = useState<Acct[]>([]);
-  const [hiddenAccts, setHiddenAccts] = useState<string[]>([]);
+  const [hiddenAccts, setHiddenAccts] = useState<string[]>(() => {
+    if (typeof window === "undefined") return [];
+    try { const h = JSON.parse(localStorage.getItem("adsHiddenAccounts") || "[]"); return Array.isArray(h) ? h : []; } catch { return []; }
+  });
   const [acctId,      setAcctId]      = useState("all");
   const [acctName,    setAcctName]    = useState("ภาพรวม");
   const [acctOpen,    setAcctOpen]    = useState(false);
@@ -106,7 +109,6 @@ export function CreativePerformance() {
   const roasRef   = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    try { const h = JSON.parse(localStorage.getItem("adsHiddenAccounts") || "[]"); if (Array.isArray(h)) setHiddenAccts(h); } catch {}
     fetch("/api/accounts").then(r => r.json()).then((a: Acct[] | { error: string }) => {
       if (Array.isArray(a) && a.length) setAccounts(a);
     });
@@ -127,13 +129,10 @@ export function CreativePerformance() {
     try {
       const range = since && until ? `&since=${since}&until=${until}` : "";
       if (acctId === "all") {
-        const visible = hiddenAccts.length === accounts.length ? accounts : accounts.filter(a => !hiddenAccts.includes(a.id));
-        const targets = visible.length ? visible : accounts;
-        if (!targets.length) { setPoints([]); setLoading(false); setRefreshing(false); return; }
-        const results = await Promise.all(
-          targets.map(a => fetch(`/api/creative-timeline?act=${a.id}&preset=${datePreset}${range}`).then(r => r.json()).catch(() => []))
-        );
-        setPoints(results.flatMap(d => Array.isArray(d) ? d : []));
+        const hiddenParam = hiddenAccts.length ? `&hidden=${hiddenAccts.join(",")}` : "";
+        const d = await fetch(`/api/creative-timeline-all?preset=${datePreset}${range}${hiddenParam}`).then(r => r.json());
+        if (d.error) throw new Error(d.error);
+        setPoints(Array.isArray(d) ? d : []);
       } else {
         const d = await fetch(`/api/creative-timeline?act=${acctId}&preset=${datePreset}${range}`).then(r => r.json());
         if (d.error) throw new Error(d.error);
@@ -141,7 +140,7 @@ export function CreativePerformance() {
       }
     } catch (e: any) { setError(e.message); }
     finally { setLoading(false); setRefreshing(false); }
-  }, [acctId, datePreset, since, until, accounts, hiddenAccts]);
+  }, [acctId, datePreset, since, until, hiddenAccts]);
 
   useEffect(() => { load(); }, [load]);
 
