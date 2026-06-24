@@ -79,9 +79,32 @@ function toPublicAgent(row: any) {
 
 // ── Office layout ─────────────────────────────────────────────────────────────
 
+// The office grid is a fixed 20-wide layout (matches the editor + canvas).
+const OFFICE_COLS = 20
+const OFFICE_ROWS = 14
+
+// Empty room with a wall border — used when no layout has been saved yet.
+function defaultOffice() {
+  const tiles = new Array(OFFICE_COLS * OFFICE_ROWS).fill(0)
+  for (let x = 0; x < OFFICE_COLS; x++) {
+    tiles[x] = 1                                   // top
+    tiles[(OFFICE_ROWS - 1) * OFFICE_COLS + x] = 1 // bottom
+  }
+  for (let y = 0; y < OFFICE_ROWS; y++) {
+    tiles[y * OFFICE_COLS] = 1                     // left
+    tiles[y * OFFICE_COLS + (OFFICE_COLS - 1)] = 1 // right
+  }
+  return { cols: OFFICE_COLS, rows: OFFICE_ROWS, tiles, furniture: [] }
+}
+
 export async function getOfficeLayout() {
   const { data } = await supabase.from('office_layout').select('tiles,furniture').eq('id', 'singleton').single()
-  return data ? { tiles: data.tiles as object[], furniture: data.furniture as object[] } : { tiles: [], furniture: [] }
+  const tiles = (data?.tiles as object[]) ?? null
+  if (!tiles || tiles.length === 0) return defaultOffice()
+  // cols/rows aren't persisted; the grid is fixed-width, so derive rows from length.
+  const cols = OFFICE_COLS
+  const rows = Math.max(1, Math.round(tiles.length / cols))
+  return { cols, rows, tiles, furniture: (data?.furniture as object[]) ?? [] }
 }
 
 export async function saveOfficeLayout(layout: { tiles: object[]; furniture: object[] }) {
