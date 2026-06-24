@@ -1,93 +1,91 @@
 import { NextRequest, NextResponse } from "next/server";
-import { readStore, writeStore, toPublic, newId } from "@/lib/agents/store";
-import type { Agent, Office } from "@/lib/agents/types";
+import { getAgents, getAgentWithKey, saveAgent, deleteAgent, getOfficeLayout, saveOfficeLayout } from "@/lib/agents/store";
 
 export const dynamic = "force-dynamic";
 
-// GET /api/agents → { agents: PublicAgent[], office }  (keys redacted)
+function newId(): string {
+  return crypto.randomUUID().replace(/-/g, '').slice(0, 16)
+}
+
+// GET /api/agents → { agents, office }
 export async function GET() {
-  const store = readStore();
-  return NextResponse.json({
-    agents: store.agents.map(toPublic),
-    office: store.office,
-  });
+  try {
+    const [agents, office] = await Promise.all([getAgents(), getOfficeLayout()])
+    return NextResponse.json({ agents, office })
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message }, { status: 500 })
+  }
 }
 
 // POST /api/agents → create an agent. Body: agent fields incl. apiKey.
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const store = readStore();
-    const agent: Agent = {
-      id: newId(),
+    const body = await req.json()
+    const id = newId()
+    await saveAgent({
+      id,
       name: String(body.name || "Agent").slice(0, 40),
-      spriteId: Number(body.spriteId) || 0,
-      color: String(body.color || "#5b6cff"),
+      role: String(body.role || ""),
+      sprite: String(body.sprite || "default"),
       provider: body.provider === "openai" ? "openai" : "anthropic",
       model: String(body.model || ""),
-      apiKey: String(body.apiKey || ""),
       systemPrompt: String(body.systemPrompt || ""),
-      scope: { accountId: String(body.scope?.accountId || body.accountId || "") },
-      deskId: body.deskId ?? null,
-      pos: body.pos ?? { x: 2, y: 2 },
-      createdAt: Date.now(),
-    };
-    store.agents.push(agent);
-    writeStore(store);
-    return NextResponse.json({ agent: toPublic(agent) });
+      scope: body.scope ?? [],
+      apiKey: body.apiKey ?? null,
+      posX: body.posX ?? body.pos?.x ?? 2,
+      posY: body.posY ?? body.pos?.y ?? 2,
+    })
+    const agent = await getAgentWithKey(id)
+    return NextResponse.json({ agent })
   } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    return NextResponse.json({ error: e.message }, { status: 500 })
   }
 }
 
 // PUT /api/agents → update an agent and/or the office layout.
-// Body: { id?, patch?, office? }. apiKey is only overwritten when a non-empty
-// value is supplied (so editing other fields never wipes the stored key).
+// Body: { id?, patch?, office? }. apiKey is only overwritten when a non-empty value is supplied.
 export async function PUT(req: NextRequest) {
   try {
-    const body = await req.json();
-    const store = readStore();
+    const body = await req.json()
 
     if (body.office) {
-      store.office = body.office as Office;
+      await saveOfficeLayout(body.office)
     }
 
     if (body.id && body.patch) {
-      const a = store.agents.find((x) => x.id === body.id);
-      if (!a) return NextResponse.json({ error: "agent not found" }, { status: 404 });
-      const p = body.patch as Partial<Agent> & { accountId?: string };
-      if (p.name !== undefined) a.name = String(p.name).slice(0, 40);
-      if (p.color !== undefined) a.color = String(p.color);
-      if (p.spriteId !== undefined) a.spriteId = Number(p.spriteId);
-      if (p.provider !== undefined) a.provider = p.provider === "openai" ? "openai" : "anthropic";
-      if (p.model !== undefined) a.model = String(p.model);
-      if (p.systemPrompt !== undefined) a.systemPrompt = String(p.systemPrompt);
-      if (p.deskId !== undefined) a.deskId = p.deskId;
-      if (p.pos !== undefined) a.pos = p.pos;
-      if (p.scope?.accountId !== undefined) a.scope.accountId = String(p.scope.accountId);
-      else if (p.accountId !== undefined) a.scope.accountId = String(p.accountId);
-      if (typeof p.apiKey === "string" && p.apiKey.length > 0) a.apiKey = p.apiKey;
+      const existing = await getAgentWithKey(body.id)
+      if (!existing) return NextResponse.json({ error: "agent not found" }, { status: 404 })
+      const p = body.patch
+      await saveAgent({
+        id: body.id,
+        name: p.name !== undefined ? String(p.name).slice(0, 40) : existing.name,
+        role: p.role !== undefined ? String(p.role) : (existing.role ?? ''),
+        sprite: p.sprite !== undefined ? String(p.sprite) : (existing.sprite ?? 'default'),
+        provider: p.provider !== undefined ? (p.provider === "openai" ? "openai" : "anthropic") : existing.provider,
+        model: p.model !== undefined ? String(p.model) : existing.model,
+        systemPrompt: p.systemPrompt !== undefined ? String(p.systemPrompt) : (existing.systemPrompt ?? ''),
+        scope: p.scope !== undefined ? p.scope : existing.scope,
+        apiKey: (typeof p.apiKey === "string" && p.apiKey.length > 0) ? p.apiKey : (existing.apiKey ?? null),
+        posX: p.posX !== undefined ? p.posX : (p.pos?.x !== undefined ? p.pos.x : existing.posX),
+        posY: p.posY !== undefined ? p.posY : (p.pos?.y !== undefined ? p.pos.y : existing.posY),
+      })
     }
 
-    writeStore(store);
-    return NextResponse.json({
-      agents: store.agents.map(toPublic),
-      office: store.office,
-    });
+    const [agents, office] = await Promise.all([getAgents(), getOfficeLayout()])
+    return NextResponse.json({ agents, office })
   } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    return NextResponse.json({ error: e.message }, { status: 500 })
   }
 }
 
 // DELETE /api/agents?id=... → remove an agent.
 export async function DELETE(req: NextRequest) {
   try {
-    const id = req.nextUrl.searchParams.get("id");
-    const store = readStore();
-    store.agents = store.agents.filter((a) => a.id !== id);
-    writeStore(store);
-    return NextResponse.json({ ok: true });
+    const id = req.nextUrl.searchParams.get("id")
+    if (!id) return NextResponse.json({ error: "id is required" }, { status: 400 })
+    await deleteAgent(id)
+    return NextResponse.json({ ok: true })
   } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    return NextResponse.json({ error: e.message }, { status: 500 })
   }
 }

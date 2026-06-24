@@ -7,7 +7,7 @@
 // on CPL), auto-detected from whether the account produced revenue in the window.
 import { getLevel, getAccounts, type Row } from "@/lib/fb";
 import { resolveCompareRanges } from "./dates";
-import { newId } from "./store";
+function newId() { return crypto.randomUUID().replace(/-/g, '').slice(0, 16) }
 import type { Briefing, BriefingItem, BriefingKind, BriefingSeverity, BriefingMetric } from "./types";
 
 export interface BriefingOptions {
