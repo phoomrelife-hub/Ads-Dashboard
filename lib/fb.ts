@@ -1,7 +1,6 @@
 // Facebook Marketing API client + metric parsing (ported from the prototype server.mjs)
 import crypto from "node:crypto";
-import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
-import path from "node:path";
+import { getCachedAccounts, setCachedAccounts, getCachedPages, setCachedPages } from "@/lib/cache/accounts";
 import type { CampaignDraft, ChainDeps } from "./ads-create/chain";
 import { billingEventFor } from "./ads-create/spec";
 
@@ -687,13 +686,6 @@ async function mapPool<T, R>(items: T[], limit: number, fn: (item: T, i: number)
 
 type PageEntry = { id: string; name: string };
 const PAGES_TTL_MS = 6 * 60 * 60 * 1000;
-const pagesCacheFile = (act: string) => path.join(process.cwd(), `pages-cache-${act.replace(/[^a-z0-9_]/gi, "")}.json`);
-const readPagesCache = (act: string): PageEntry[] | null => {
-  try { return JSON.parse(readFileSync(pagesCacheFile(act), "utf8")); } catch { return null; }
-};
-const isPagesCacheFresh = (act: string): boolean => {
-  try { return existsSync(pagesCacheFile(act)) && Date.now() - statSync(pagesCacheFile(act)).mtimeMs < PAGES_TTL_MS; } catch { return false; }
-};
 // Union-merge with whatever's cached so the list only ever grows (a rate-limited partial crawl never shrinks it).
 // Real (resolved) names always win over `เพจ <id>` fallbacks.
 function mergePages(prev: PageEntry[] | null, next: PageEntry[]): PageEntry[] {
@@ -705,9 +697,6 @@ function mergePages(prev: PageEntry[] | null, next: PageEntry[]): PageEntry[] {
     if (!cur || (isFallback(cur) && !isFallback(p.name))) map.set(p.id, p.name);
   }
   return [...map].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, "th"));
-}
-function writePagesCache(act: string, result: PageEntry[]) {
-  try { if (result.length) writeFileSync(pagesCacheFile(act), JSON.stringify(result, null, 2)); } catch { /* best-effort */ }
 }
 
 // Crawl one account's ads (bounded, error-tolerant) → distinct page ids
@@ -732,7 +721,7 @@ async function crawlAccountPageIds(actId: string): Promise<Set<string>> {
 }
 
 // Distinct Pages running ads in an account (or "all"), id + resolved name — powers the page filter.
-// Disk-cached per act (6h TTL), union-merged so it only grows, and "all" composes the per-account
+// DB-cached per act (6h TTL), union-merged so it only grows, and "all" composes the per-account
 // caches with limited concurrency to avoid the request burst that was triggering rate limits.
 export async function getAccountPages(act: string): Promise<PageEntry[]> {
   if (act === "all") {
@@ -740,18 +729,21 @@ export async function getAccountPages(act: string): Promise<PageEntry[]> {
     // rate-limited stragglers retry, so the union grows toward the full set instead of freezing partial.
     const accts = await getAccounts();
     const lists = await mapPool(accts, 3, (a: { id: string }) => getAccountPages(a.id).catch(() => [] as PageEntry[]));
-    const merged = mergePages(readPagesCache("all"), lists.flat());
-    writePagesCache("all", merged);
+    const prevCached = await getCachedPages("all", PAGES_TTL_MS).catch(() => null);
+    const merged = mergePages(prevCached, lists.flat());
+    if (merged.length) await setCachedPages("all", merged).catch(() => {});
     return merged;
   }
 
   // single account: serve fresh cache, else crawl → resolve names → union-merge with prior cache
-  if (isPagesCacheFresh(act)) return readPagesCache(act) || [];
+  const cached = await getCachedPages(act, PAGES_TTL_MS).catch(() => null);
+  if (cached) return cached;
   const ids = await crawlAccountPageIds(act);
   const names = await resolvePageNames([...ids]);
   const fresh = [...ids].map((id) => ({ id, name: names.get(id) || `เพจ ${id}` }));
-  const merged = mergePages(readPagesCache(act), fresh);
-  writePagesCache(act, merged);
+  const prevCached = await getCachedPages(act, Infinity).catch(() => null); // get stale cache for merge
+  const merged = mergePages(prevCached, fresh);
+  if (merged.length) await setCachedPages(act, merged).catch(() => {});
   return merged;
 }
 
@@ -773,16 +765,17 @@ function visibleAccounts(accts: Acct[], hidden: string[]): Acct[] {
   return visible.length ? visible : accts;
 }
 
-// account list with disk cache (survives rate limits)
-const CACHE = path.join(process.cwd(), "accounts-cache.json");
+// account list with DB cache (survives rate limits)
 export async function getAccounts() {
   try {
     const a = (await fbGet("/me/adaccounts", { fields: "name,account_id,account_status", limit: "200" })).data || [];
     const list = a.map((x: any) => ({ id: `act_${x.account_id}`, name: x.name, active: x.account_status === 1 }));
-    if (list.length) writeFileSync(CACHE, JSON.stringify(list, null, 2));
+    if (list.length) await setCachedAccounts(list).catch(() => {});
     return list;
   } catch (e) {
-    try { return JSON.parse(readFileSync(CACHE, "utf8")); } catch { throw e; }
+    const cached = await getCachedAccounts(Infinity).catch(() => null); // accept any age on error
+    if (cached) return cached;
+    throw e;
   }
 }
 
