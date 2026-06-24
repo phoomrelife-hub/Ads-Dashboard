@@ -84,8 +84,8 @@ function OverlaySelect({ label, value, onChange, children }: {
 export function CreativePerformance() {
   const [accounts,    setAccounts]    = useState<Acct[]>([]);
   const [hiddenAccts, setHiddenAccts] = useState<string[]>([]);
-  const [acctId,      setAcctId]      = useState("");
-  const [acctName,    setAcctName]    = useState("");
+  const [acctId,      setAcctId]      = useState("all");
+  const [acctName,    setAcctName]    = useState("ภาพรวม");
   const [acctOpen,    setAcctOpen]    = useState(false);
   const [acctQuery,   setAcctQuery]   = useState("");
   const [datePreset,  setDatePreset]  = useState("last_7d");
@@ -106,16 +106,9 @@ export function CreativePerformance() {
   const roasRef   = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    let hidden: string[] = [];
-    try { const h = JSON.parse(localStorage.getItem("adsHiddenAccounts") || "[]"); if (Array.isArray(h)) { hidden = h; setHiddenAccts(h); } } catch {}
+    try { const h = JSON.parse(localStorage.getItem("adsHiddenAccounts") || "[]"); if (Array.isArray(h)) setHiddenAccts(h); } catch {}
     fetch("/api/accounts").then(r => r.json()).then((a: Acct[] | { error: string }) => {
-      if (Array.isArray(a) && a.length) {
-        setAccounts(a);
-        // default to the first non-hidden account (fall back to all if every account is hidden)
-        const visible = a.filter(x => !hidden.includes(x.id));
-        const first = (visible.length ? visible : a)[0];
-        setAcctId(first.id); setAcctName(first.name);
-      }
+      if (Array.isArray(a) && a.length) setAccounts(a);
     });
   }, []);
 
@@ -133,12 +126,22 @@ export function CreativePerformance() {
     setLoading(true); setRefreshing(true); setError(""); setSelected(null);
     try {
       const range = since && until ? `&since=${since}&until=${until}` : "";
-      const d = await fetch(`/api/creative-timeline?act=${acctId}&preset=${datePreset}${range}`).then(r => r.json());
-      if (d.error) throw new Error(d.error);
-      setPoints(Array.isArray(d) ? d : []);
+      if (acctId === "all") {
+        const visible = hiddenAccts.length === accounts.length ? accounts : accounts.filter(a => !hiddenAccts.includes(a.id));
+        const targets = visible.length ? visible : accounts;
+        if (!targets.length) { setPoints([]); setLoading(false); setRefreshing(false); return; }
+        const results = await Promise.all(
+          targets.map(a => fetch(`/api/creative-timeline?act=${a.id}&preset=${datePreset}${range}`).then(r => r.json()).catch(() => []))
+        );
+        setPoints(results.flatMap(d => Array.isArray(d) ? d : []));
+      } else {
+        const d = await fetch(`/api/creative-timeline?act=${acctId}&preset=${datePreset}${range}`).then(r => r.json());
+        if (d.error) throw new Error(d.error);
+        setPoints(Array.isArray(d) ? d : []);
+      }
     } catch (e: any) { setError(e.message); }
     finally { setLoading(false); setRefreshing(false); }
-  }, [acctId, datePreset, since, until]);
+  }, [acctId, datePreset, since, until, accounts, hiddenAccts]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -240,8 +243,9 @@ export function CreativePerformance() {
           <div ref={comboRef} className="relative">
             <button onClick={() => { setAcctQuery(""); setAcctOpen(o => !o); }}
               className="flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-lg text-[11px] font-medium cursor-pointer"
-              style={ovCtrl}>
-              <span className="max-w-[110px] truncate text-[#c9d1e0]">{acctName || "บัญชี"}</span>
+              style={acctId === "all" ? { ...ovCtrl, borderColor: "rgba(45,136,255,0.4)", background: "rgba(45,136,255,0.1)" } : ovCtrl}>
+              {acctId === "all" && <span className="text-[#2d88ff] text-[9px]">◉</span>}
+              <span className="max-w-[110px] truncate" style={{ color: acctId === "all" ? "#2d88ff" : "#c9d1e0" }}>{acctName || "บัญชี"}</span>
               <IcoChevron />
             </button>
             <AnimatePresence>
@@ -253,6 +257,14 @@ export function CreativePerformance() {
                   <div className="p-2 border-b border-white/[0.06]">
                     <input value={acctQuery} onChange={e => setAcctQuery(e.target.value)} placeholder="ค้นหา..."
                       className="w-full bg-transparent text-[12px] outline-none text-[#c9d1e0] placeholder:text-[#2a3a50]" autoFocus />
+                  </div>
+                  {/* Overall option */}
+                  <div onClick={() => { setAcctId("all"); setAcctName("ภาพรวม"); setAcctOpen(false); }}
+                    className="px-3 py-2 cursor-pointer text-[12px] truncate transition-colors flex items-center gap-1.5"
+                    style={{ color: acctId === "all" ? "#fff" : "#8a9aba", background: acctId === "all" ? "#2d88ff" : "transparent", borderBottom: "1px solid rgba(255,255,255,0.06)" }}
+                    onMouseEnter={e => { if (acctId !== "all") e.currentTarget.style.background = "rgba(45,136,255,0.1)"; }}
+                    onMouseLeave={e => { if (acctId !== "all") e.currentTarget.style.background = "transparent"; }}>
+                    <span className="text-[10px] opacity-60">◉</span> ภาพรวม (ทุกบัญชี)
                   </div>
                   {filteredAccts.length ? filteredAccts.map(a => (
                     <div key={a.id} onClick={() => { setAcctId(a.id); setAcctName(a.name); setAcctOpen(false); }}
