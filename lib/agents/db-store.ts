@@ -60,12 +60,18 @@ function toPublicAgent(row: any) {
     name: row.name,
     role: row.role,
     sprite: row.sprite,
+    spriteId: Number(row.sprite) || 0,
+    color: row.color ?? "#5b6cff",
     provider: row.provider,
     model: row.model,
-    systemPrompt: row.system_prompt,
+    systemPrompt: row.system_prompt ?? "",
     scope: row.scope ?? [],
+    deskId: row.desk_id ?? null,
+    // The UI reads `pos.{x,y}`; keep posX/posY too for the edit forms.
+    pos: { x: row.pos_x ?? 0, y: row.pos_y ?? 0 },
     posX: row.pos_x,
     posY: row.pos_y,
+    createdAt: row.created_at ? new Date(row.created_at).getTime() : 0,
     hasKey: Boolean(row.api_key),
     // apiKey intentionally omitted
   }
@@ -109,14 +115,23 @@ export async function addLog(agentId: string, entry: { type: string; message: st
   }
 }
 
-export async function getLogs(agentId: string) {
-  const { data } = await supabase
+export async function getLogs(agentId?: string | null) {
+  let query = supabase
     .from('logs')
     .select('*')
-    .eq('agent_id', agentId)
     .order('created_at', { ascending: false })
     .limit(LOG_CAP)
-  return (data ?? []).map((r: any) => ({ id: r.id, agentId: r.agent_id, type: r.type, message: r.message, meta: r.meta, createdAt: r.created_at }))
+  // When no agentId is supplied, return logs across all agents (activity feed).
+  if (agentId) query = query.eq('agent_id', agentId)
+  const { data } = await query
+  // Shape to the frontend LogEntry contract: { id, agentId, ts, kind, text }.
+  return (data ?? []).map((r: any) => ({
+    id: r.id,
+    agentId: r.agent_id,
+    ts: r.created_at ? new Date(r.created_at).getTime() : 0,
+    kind: r.type,
+    text: r.message,
+  }))
 }
 
 // ── Rules ─────────────────────────────────────────────────────────────────────
