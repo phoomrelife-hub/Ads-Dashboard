@@ -12,8 +12,15 @@ export async function getCachedAccounts(ttlMs = ACCOUNT_TTL_MS) {
 
 export async function setCachedAccounts(accounts: { id: string; name: string; currency?: string; timezone?: string }[]) {
   const now = new Date().toISOString()
+  // Only cache rows that carry a REAL name. On Facebook's development-access tier a throttled/partial
+  // /me/adaccounts can return an account with a blank name (or we seed the id as a placeholder via
+  // setCachedPages); a plain upsert of that would clobber a real name already cached, leaving the
+  // selector stuck showing `act_…` until the next clean fetch. Skipping nameless rows means the live
+  // call still surfaces the account this request, but the cache only ever keeps good names.
+  const named = accounts.filter(a => a.name && a.name.trim() && a.name !== a.id)
+  if (!named.length) return
   await supabase.from('fb_accounts').upsert(
-    accounts.map(a => ({ id: a.id, name: a.name, currency: a.currency ?? null, timezone: a.timezone ?? null, cached_at: now }))
+    named.map(a => ({ id: a.id, name: a.name, currency: a.currency ?? null, timezone: a.timezone ?? null, cached_at: now }))
   )
 }
 
