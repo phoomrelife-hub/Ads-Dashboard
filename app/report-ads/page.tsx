@@ -497,8 +497,8 @@ type AcctBreakRow = {
   roas: number; cpi: number; costPerOrder: number;
 };
 
-function AccountBreakdown({ period, dateRange, page }: {
-  period: PK; dateRange: { since: string; until: string } | null; page: string;
+function AccountBreakdown({ period, dateRange, brandPageIds }: {
+  period: PK; dateRange: { since: string; until: string } | null; brandPageIds: string;
 }) {
   const [rows, setRows] = useState<AcctBreakRow[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -508,10 +508,10 @@ function AccountBreakdown({ period, dateRange, page }: {
     let alive = true;
     setLoading(true);
     setErr(null);
-    const pageQ = page ? `&page=${page}` : "";
+    const brandQ = brandPageIds ? `&pages=${brandPageIds}` : "";
     const url = dateRange
-      ? `/api/account-breakdown?preset=custom&since=${dateRange.since}&until=${dateRange.until}${pageQ}`
-      : `/api/account-breakdown?preset=${period}${pageQ}`;
+      ? `/api/account-breakdown?preset=custom&since=${dateRange.since}&until=${dateRange.until}${brandQ}`
+      : `/api/account-breakdown?preset=${period}${brandQ}`;
     fetch(url)
       .then(r => r.json())
       .then(j => {
@@ -522,7 +522,7 @@ function AccountBreakdown({ period, dateRange, page }: {
       .catch(e => { if (alive) setErr(e.message || "โหลดข้อมูลไม่สำเร็จ"); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [period, dateRange, page]);
+  }, [period, dateRange, brandPageIds]);
 
   const COLS = [
     { label: "ค่าโฆษณา", align: "right" as const },
@@ -627,6 +627,34 @@ function StatSkeleton({ big }: { big?: boolean }) {
   );
 }
 
+// ─── Brand groups ─────────────────────────────────────────────
+type Brand = { key: string; label: string; color: string; pages: string[] };
+const BRANDS: Brand[] = [
+  {
+    key: "yanhee", label: "Yanhee", color: "#f472b6",
+    pages: ["1009471678912576","761879697002676","576966688835369"],
+  },
+  {
+    key: "bioactive", label: "BioActive", color: "#22d3ee",
+    pages: [
+      "796395763564984","102677399398975","716673838206298",
+      "1009286908923937","945678795296557","914781158393714",
+      "100314123037279","109424785448593","627470817127291",
+      "984173478105679","1000937386427885","940379315830705",
+      "961922937001161","1051257084735656","882218364985816","922183924315770",
+    ],
+  },
+  {
+    key: "hopeful", label: "Hopeful+", color: "#31c48d",
+    pages: [
+      "992375017294431","1052728847928956","931296696743032",
+      "1065862346600791","951923971345251","1002478362949057",
+      "769718802893628","905776652609110","931855656668305",
+      "1172783582581920","1012770168588916",
+    ],
+  },
+];
+
 // ─── Periods ─────────────────────────────────────────────────
 const PERIODS = [
   { k: "last_7d",   label: "7 วัน"    },
@@ -647,10 +675,7 @@ export default function ReportAdsPage() {
   const [error, setError] = useState<string | null>(null);
   const [acctOpen, setAcctOpen] = useState(false);
   const [calOpen, setCalOpen] = useState(false);
-  const [pages, setPages] = useState<{ id: string; name: string }[]>([]);
-  const [pagesLoading, setPagesLoading] = useState(false);
-  const [pageFilter, setPageFilter] = useState(""); // "" = all pages
-  const [hiddenPages, setHiddenPages] = useState<string[]>([]);
+  const [brandFilter, setBrandFilter] = useState(""); // "" = all brands
   const [selectedCards, setSelectedCards] = useState<Set<string>>(
     new Set(["spend", "roas", "orders", "revenue"])
   );
@@ -683,37 +708,19 @@ export default function ReportAdsPage() {
       .catch(() => {});
   }, []);
 
-  // hidden pages from Workspace Settings
-  useEffect(() => {
-    try { const p = JSON.parse(localStorage.getItem("adsHiddenPages") || "[]"); if (Array.isArray(p)) setHiddenPages(p); } catch {}
-  }, []);
-  useEffect(() => { if (pageFilter && hiddenPages.includes(pageFilter)) setPageFilter(""); }, [hiddenPages, pageFilter]);
-
-  // Load pages for the selected account (for the เพจ filter); reset filter when account changes
-  useEffect(() => {
-    if (!act) return;
-    let alive = true;
-    setPageFilter("");
-    setPages([]);
-    setPagesLoading(true);
-    fetch(`/api/pages?act=${act}`)
-      .then(r => r.json())
-      .then((list) => { if (alive && Array.isArray(list)) setPages(list); })
-      .catch(() => {})
-      .finally(() => { if (alive) setPagesLoading(false); });
-    return () => { alive = false; };
-  }, [act]);
 
   // Fetch report data when act or period changes
+  const brandPageIds = brandFilter ? BRANDS.find(b => b.key === brandFilter)?.pages.join(",") ?? "" : "";
+
   const fetchData = useCallback(async () => {
     if (!act) return;
     setLoading(true);
     setError(null);
     try {
-      const pageQ = pageFilter ? `&page=${pageFilter}` : "";
+      const brandQ = brandPageIds ? `&pages=${brandPageIds}` : "";
       const url = dateRange
-        ? `/api/report-ads?act=${act}&preset=custom&since=${dateRange.since}&until=${dateRange.until}${pageQ}`
-        : `/api/report-ads?act=${act}&preset=${period}${pageQ}`;
+        ? `/api/report-ads?act=${act}&preset=custom&since=${dateRange.since}&until=${dateRange.until}${brandQ}`
+        : `/api/report-ads?act=${act}&preset=${period}${brandQ}`;
       const res = await fetch(url);
       const json = await res.json();
       if (json.error) throw new Error(json.error);
@@ -723,7 +730,7 @@ export default function ReportAdsPage() {
     } finally {
       setLoading(false);
     }
-  }, [act, period, dateRange, pageFilter]);
+  }, [act, period, dateRange, brandPageIds]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -816,28 +823,33 @@ export default function ReportAdsPage() {
           </div>
         )}
 
-        {/* Page filter */}
-        <div className="relative">
-          <select
-            value={pageFilter}
-            onChange={e => setPageFilter(e.target.value)}
-            disabled={pagesLoading}
-            className="appearance-none px-3 py-2 pr-8 rounded-lg text-[12px] font-medium cursor-pointer outline-none"
-            style={{
-              background: pageFilter ? "rgba(245,177,76,0.1)" : "#0c1220",
-              border: pageFilter ? "1px solid rgba(245,177,76,0.32)" : "1px solid rgba(255,255,255,0.08)",
-              color: pageFilter ? "#f5b14c" : "#c9d1e0", maxWidth: 200,
-              opacity: pagesLoading ? 0.6 : 1, cursor: pagesLoading ? "wait" : "pointer",
-            }}
-            title="กรองตามเพจ"
-          >
-            <option value="">{pagesLoading ? "กำลังโหลดเพจ…" : "ทุกเพจ"}</option>
-            {pages.filter(p => !hiddenPages.includes(p.id)).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-          <div className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2"
-            style={{ color: pageFilter ? "#f5b14c" : "#3a4a6a" }}>
-            <IcoChevron />
-          </div>
+        {/* Brand filter pills */}
+        <div className="flex items-center gap-1 p-1 rounded-xl"
+          style={{ background: "#0c1220", border: "1px solid rgba(255,255,255,0.06)" }}>
+          <button
+            onClick={() => setBrandFilter("")}
+            className="relative px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all cursor-pointer"
+            style={{ color: !brandFilter ? "#c9d1e0" : "#3a4a6a" }}>
+            {!brandFilter && (
+              <motion.div layoutId="brand-bg" className="absolute inset-0 rounded-lg"
+                style={{ background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.1)" }}
+                transition={{ type: "spring", stiffness: 500, damping: 36 }} />
+            )}
+            <span className="relative">ทั้งหมด</span>
+          </button>
+          {BRANDS.map(b => (
+            <button key={b.key}
+              onClick={() => setBrandFilter(b.key)}
+              className="relative px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all cursor-pointer"
+              style={{ color: brandFilter === b.key ? b.color : "#3a4a6a" }}>
+              {brandFilter === b.key && (
+                <motion.div layoutId="brand-bg" className="absolute inset-0 rounded-lg"
+                  style={{ background: `${b.color}14`, border: `1px solid ${b.color}30` }}
+                  transition={{ type: "spring", stiffness: 500, damping: 36 }} />
+              )}
+              <span className="relative">{b.label}</span>
+            </button>
+          ))}
         </div>
 
         {/* Period pills */}
@@ -1050,13 +1062,13 @@ export default function ReportAdsPage() {
         <div className="px-2 pt-2 pb-1">
           {loading || !data
             ? <div className="skeleton rounded-lg mx-2 my-2" style={{ height: 260 }} />
-            : <TrendChart key={`${act}-${period}-${dateRange?.since}-${dateRange?.until}-${[...selectedCards].sort().join()}`} data={data.daily} series={chartSeries} />
+            : <TrendChart key={`${act}-${period}-${dateRange?.since}-${dateRange?.until}-${brandFilter}-${[...selectedCards].sort().join()}`} data={data.daily} series={chartSeries} />
           }
         </div>
       </motion.div>
 
       {/* ── Account Breakdown (แยกตามบัญชีโฆษณา) ────────────── */}
-      <AccountBreakdown period={period} dateRange={dateRange} page={pageFilter} />
+      <AccountBreakdown period={period} dateRange={dateRange} brandPageIds={brandPageIds} />
     </div>
   );
 }

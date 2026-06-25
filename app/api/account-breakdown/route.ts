@@ -8,7 +8,10 @@ export async function GET(req: NextRequest) {
   const preset = sp.get("preset") || "last_30d";
   const since = sp.get("since") || undefined;
   const until = sp.get("until") || undefined;
-  const page = sp.get("page") || ""; // when set → each account's totals scoped to this page
+  const page = sp.get("page") || "";
+  // `pages` = comma-separated list for brand filtering (multiple pages at once)
+  const pagesParam = sp.get("pages") || "";
+  const pageSet: Set<string> | null = pagesParam ? new Set(pagesParam.split(",").filter(Boolean)) : page ? new Set([page]) : null;
 
   try {
     const accounts = await getAccounts();
@@ -17,10 +20,10 @@ export async function GET(req: NextRequest) {
       accounts.map(async (a: { id: string; name: string; active: boolean }) => {
         try {
           let spend = 0, messaging = 0, orders = 0, revenue = 0, roas = 0;
-          if (page) {
-            // sum only this page's ads within the account
+          if (pageSet) {
+            // sum only this brand's/page's ads within the account
             const ad = await getAdDaily(a.id, preset, since, until);
-            for (const r of ad) if (r.pageId === page) { spend += r.metrics.spend; messaging += r.metrics.messaging; orders += r.metrics.purchases; revenue += r.metrics.revenue; }
+            for (const r of ad) if (pageSet.has(r.pageId)) { spend += r.metrics.spend; messaging += r.metrics.messaging; orders += r.metrics.purchases; revenue += r.metrics.revenue; }
             roas = spend ? revenue / spend : 0;
           } else {
             const m = await getAccountTotals(a.id, preset, since, until);

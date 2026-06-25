@@ -16,7 +16,10 @@ export async function GET(req: NextRequest) {
   const preset = sp.get("preset") || "last_30d";
   const since = sp.get("since") || undefined;
   const until = sp.get("until") || undefined;
-  const page = sp.get("page") || ""; // when set → ad-level path filtered to this page
+  const page = sp.get("page") || "";
+  // `pages` = comma-separated list for brand filtering (multiple pages at once)
+  const pagesParam = sp.get("pages") || "";
+  const pageSet: Set<string> | null = pagesParam ? new Set(pagesParam.split(",").filter(Boolean)) : page ? new Set([page]) : null;
 
   if (!act) return NextResponse.json({ error: "act required" }, { status: 400 });
 
@@ -34,12 +37,12 @@ export async function GET(req: NextRequest) {
 
     // sum raw metrics per date across all accounts
     const byDate = new Map<string, DayAcc>();
-    if (page) {
-      // ad-level: keep only ads belonging to the selected page, then aggregate by day
+    if (pageSet) {
+      // ad-level: keep only ads belonging to the selected page(s), then aggregate by day
       const perAct = await Promise.all(acts.map((id) => getAdDaily(id, preset, since, until).catch(() => [])));
       for (const rows of perAct)
         for (const r of rows)
-          if (r.pageId === page)
+          if (pageSet.has(r.pageId))
             add(byDate, r.date, r.metrics as any);
     } else {
       // fast path: pre-aggregated account-level day breakdown
