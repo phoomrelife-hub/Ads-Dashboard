@@ -1,13 +1,35 @@
-﻿"use client";
-import { useCallback, useEffect, useState } from "react";
+"use client";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AnimatePresence, motion, useMotionValue, animate } from "framer-motion";
 import { ThailandMap } from "@/components/thailand-map";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
 type Row = Record<string, string | number>;
 type BResult = { rows: Row[]; totals: Record<string, number> };
 type Account = { id: string; name: string; active?: boolean };
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+// ─── Metric catalog ───────────────────────────────────────────────────────────
+type Format = "baht" | "int" | "pct" | "x";
+type Polarity = "cost" | "good" | "neutral";
+type MetricDef = { key: string; label: string; fmt: Format; additive: boolean; polarity: Polarity };
+
+const METRICS: MetricDef[] = [
+  { key: "spend",           label: "ค่าโฆษณา",   fmt: "baht", additive: true,  polarity: "neutral" },
+  { key: "leads",           label: "Leads",       fmt: "int",  additive: true,  polarity: "good"    },
+  { key: "purchases",       label: "Purchases",   fmt: "int",  additive: true,  polarity: "good"    },
+  { key: "messaging",       label: "ข้อความ",     fmt: "int",  additive: true,  polarity: "good"    },
+  { key: "impressions",     label: "Impressions", fmt: "int",  additive: true,  polarity: "neutral" },
+  { key: "cpl",             label: "CPL",         fmt: "baht", additive: false, polarity: "cost"    },
+  { key: "costPerPurchase", label: "CPA",         fmt: "baht", additive: false, polarity: "cost"    },
+  { key: "roas",            label: "ROAS",        fmt: "x",    additive: false, polarity: "good"    },
+  { key: "ctr",             label: "CTR",         fmt: "pct",  additive: false, polarity: "good"    },
+  { key: "cpc",             label: "CPC",         fmt: "baht", additive: false, polarity: "cost"    },
+  { key: "cpm",             label: "CPM",         fmt: "baht", additive: false, polarity: "cost"    },
+];
+const ALL_METRICS = METRICS;
+const ADDITIVE_METRICS = METRICS.filter(m => m.additive);
+const metricOf = (key: string) => METRICS.find(m => m.key === key) ?? METRICS[0];
+
+// ─── Presets ──────────────────────────────────────────────────────────────────
 const PRESETS: [string, string][] = [
   ["last_7d", "7 วันล่าสุด"],
   ["last_14d", "14 วันล่าสุด"],
@@ -15,51 +37,172 @@ const PRESETS: [string, string][] = [
   ["last_90d", "90 วันล่าสุด"],
 ];
 
-const GENDER_COLORS: Record<string, string> = {
-  male: "#5b6cff",
-  female: "#f472b6",
-  unknown: "#3d4f6a",
-};
-const GENDER_LABEL: Record<string, string> = { male: "ชาย", female: "หญิง", unknown: "ไม่ระบุ" };
-
+// ─── Visual constants ─────────────────────────────────────────────────────────
+const GENDER_COLORS: Record<string, string> = { male: "#5b6cff", female: "#f472b6", unknown: "#3d4f6a" };
+const GENDER_LABEL: Record<string, string>  = { male: "ชาย", female: "หญิง", unknown: "ไม่ระบุ" };
 const AGE_ORDER = ["13-17", "18-24", "25-34", "35-44", "45-54", "55-64", "65+"];
 const AGE_COLORS: Record<string, string> = {
   "13-17": "#a78bfa", "18-24": "#5b6cff", "25-34": "#22d3ee",
   "35-44": "#31c48d", "45-54": "#f5b14c", "55-64": "#ff8c42", "65+": "#ff6b6b",
 };
 
+const SPRING = { type: "spring" as const, stiffness: 120, damping: 20 };
+const FADE   = { duration: 0.22 };
+
+// ─── Polarity helpers ─────────────────────────────────────────────────────────
+function mapColors(polarity: Polarity): [string, string] {
+  if (polarity === "cost")    return ["#26303d", "#ff3b3b"];
+  if (polarity === "good")    return ["#26303d", "#31c48d"];
+  return ["#26303d", "#5b6cff"];
+}
+
+function lerpHex(a: string, b: string, t: number): string {
+  const h = (x: string) => parseInt(x, 16);
+  const c = (i: number) => Math.round(h(a.slice(i, i + 2)) + (h(b.slice(i, i + 2)) - h(a.slice(i, i + 2))) * t);
+  return `rgb(${c(1)},${c(3)},${c(5)})`;
+}
+
+function barColor(t: number, polarity: Polarity): string {
+  // cost: green→amber→red (t=0 best); good: same scale but t=0 worst, invert; neutral: mono blue
+  const effective = polarity === "good" ? 1 - t : t;
+  if (polarity === "neutral") return lerpHex("#1a2540", "#5b6cff", t);
+  const [c1, c2] = effective < 0.5
+    ? [[0x31, 0xc4, 0x8d], [0xf5, 0xb1, 0x4c]]
+    : [[0xf5, 0xb1, 0x4c], [0xff, 0x6b, 0x6b]];
+  const tt = effective < 0.5 ? effective * 2 : (effective - 0.5) * 2;
+  return `rgb(${Math.round(c1[0] + (c2[0] - c1[0]) * tt)},${Math.round(c1[1] + (c2[1] - c1[1]) * tt)},${Math.round(c1[2] + (c2[2] - c1[2]) * tt)})`;
+}
+
+// ─── Formatting ───────────────────────────────────────────────────────────────
+function fmtBaht(n: number): string {
+  return n >= 1e6 ? `฿${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `฿${(n / 1e3).toFixed(1)}k` : `฿${Math.round(n).toLocaleString()}`;
+}
+function fmtMetric(n: number, fmt: Format): string {
+  if (fmt === "baht") return fmtBaht(n);
+  if (fmt === "pct")  return `${n.toFixed(2)}%`;
+  if (fmt === "x")    return `${n.toFixed(2)}×`;
+  return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : Math.round(n).toLocaleString();
+}
+
+// ─── Auto CPA key ─────────────────────────────────────────────────────────────
+function autoCpaKey(rows: Row[]): string {
+  if (rows.some(r => Number(r.leads) > 0))     return "cpl";
+  if (rows.some(r => Number(r.messaging) > 0)) return "messaging";
+  return "costPerPurchase";
+}
+
+// ─── localStorage helper ──────────────────────────────────────────────────────
+function lsGet(key: string, fallback: string): string {
+  try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
+}
+function lsSet(key: string, val: string) {
+  try { localStorage.setItem(key, val); } catch {}
+}
+
+// ─── SEL style ────────────────────────────────────────────────────────────────
 const SEL: React.CSSProperties = {
   background: "#0a0e1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8,
   padding: "6px 10px", color: "#c8d0e0", fontSize: 12.5, outline: "none", cursor: "pointer",
 };
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-function fmtBaht(n: number): string {
-  return n >= 1e6 ? `฿${(n / 1e6).toFixed(1)}M`
-    : n >= 1e3 ? `฿${(n / 1e3).toFixed(1)}k`
-    : `฿${Math.round(n).toLocaleString()}`;
+// ─── MetricSelect ─────────────────────────────────────────────────────────────
+function MetricSelect({
+  options, value, onChange,
+}: { options: MetricDef[]; value: string; onChange: (k: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const current = metricOf(value);
+
+  useEffect(() => {
+    function close(e: MouseEvent) { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); }
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, []);
+
+  return (
+    <div ref={ref} style={{ position: "relative", display: "inline-block" }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          background: "#0a0e1a", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 7,
+          padding: "4px 8px", color: "#8a9aba", fontSize: 11.5, cursor: "pointer",
+          display: "flex", alignItems: "center", gap: 4,
+        }}
+      >
+        {current.label}
+        <svg viewBox="0 0 10 6" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ width: 9, height: 9, opacity: 0.6 }}>
+          <path d="M1 1l4 4 4-4" />
+        </svg>
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: -4 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: -4 }}
+            transition={FADE}
+            style={{
+              position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 50,
+              background: "#0e1626", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10,
+              padding: "5px", minWidth: 130, boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+            }}
+          >
+            {options.map((m, i) => (
+              <motion.button
+                key={m.key}
+                initial={{ opacity: 0, x: -6 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ ...FADE, delay: i * 0.03 }}
+                onClick={() => { onChange(m.key); setOpen(false); }}
+                style={{
+                  display: "block", width: "100%", textAlign: "left",
+                  padding: "6px 10px", fontSize: 12, borderRadius: 6, border: "none", cursor: "pointer",
+                  background: m.key === value ? "rgba(91,108,255,0.15)" : "transparent",
+                  color: m.key === value ? "#a0aaff" : "#8a9aba",
+                }}
+              >
+                {m.label}
+              </motion.button>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
 }
 
-function cpaKey(rows: Row[]): string {
-  if (rows.some(r => Number(r.leads) > 0)) return "cpl";
-  if (rows.some(r => Number(r.messaging) > 0)) return "costPerMessaging";
-  return "costPerPurchase";
-}
-function cpaLabel(key: string): string {
-  if (key === "cpl") return "CPL";
-  if (key === "costPerMessaging") return "Cost/Msg";
-  return "CPA";
+// ─── AnimatedNumber ───────────────────────────────────────────────────────────
+function AnimatedNumber({ value, fmt }: { value: number; fmt: Format }) {
+  const mv = useMotionValue(value);
+  const [display, setDisplay] = useState(() => fmtMetric(value, fmt));
+  const fmtRef = useRef(fmt);
+  fmtRef.current = fmt;
+
+  useEffect(() => {
+    const ctrl = animate(mv, value, {
+      ...SPRING,
+      onUpdate: v => setDisplay(fmtMetric(v, fmtRef.current)),
+    });
+    return () => ctrl.stop();
+  }, [value, mv]);
+
+  return <span>{display}</span>;
 }
 
-function lerpColor(t: number): string {
-  const t2 = Math.max(0, Math.min(1, t));
-  const [c1, c2] = t2 < 0.5
-    ? [[0x31, 0xc4, 0x8d], [0xf5, 0xb1, 0x4c]]
-    : [[0xf5, 0xb1, 0x4c], [0xff, 0x6b, 0x6b]];
-  const tt = t2 < 0.5 ? t2 * 2 : (t2 - 0.5) * 2;
-  return `rgb(${Math.round(c1[0] + (c2[0] - c1[0]) * tt)},${Math.round(c1[1] + (c2[1] - c1[1]) * tt)},${Math.round(c1[2] + (c2[2] - c1[2]) * tt)})`;
+// ─── CardHeader ───────────────────────────────────────────────────────────────
+function CardHeader({
+  title, options, metric, onMetric,
+}: { title: string; options: MetricDef[]; metric: string; onMetric: (k: string) => void }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+      <div style={{ fontSize: 11, color: "#3d4f6a", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>{title}</div>
+      <MetricSelect options={options} value={metric} onChange={onMetric} />
+    </div>
+  );
 }
 
+// ─── PieChart ─────────────────────────────────────────────────────────────────
 function arcPath(cx: number, cy: number, r: number, sa: number, ea: number): string {
   const sx = cx + r * Math.cos(sa), sy = cy + r * Math.sin(sa);
   const ex = cx + r * Math.cos(ea), ey = cy + r * Math.sin(ea);
@@ -67,16 +210,11 @@ function arcPath(cx: number, cy: number, r: number, sa: number, ea: number): str
   return `M ${cx} ${cy} L ${sx} ${sy} A ${r} ${r} 0 ${large} 1 ${ex} ${ey} Z`;
 }
 
-// ─── Skeleton ────────────────────────────────────────────────────────────────
-function Sk({ h = "1rem" }: { h?: string }) {
-  return <div className="skeleton" style={{ height: h, width: "100%", borderRadius: 8 }} />;
-}
-
-// ─── Pie chart ───────────────────────────────────────────────────────────────
-function PieChart({ slices, title }: {
+function PieChart({ slices, metric }: {
   slices: { label: string; value: number; color: string }[];
-  title: string;
+  metric: string;
 }) {
+  const def = metricOf(metric);
   const cx = 90, cy = 90, r = 70;
   const total = slices.reduce((s, d) => s + d.value, 0);
   if (total === 0) return (
@@ -91,95 +229,142 @@ function PieChart({ slices, title }: {
     angle += frac * Math.PI * 2;
     return { ...d, frac, path: arcPath(cx, cy, r, sa, angle) };
   });
+
   return (
-    <div>
-      <div style={{ fontSize: 11, color: "#3d4f6a", marginBottom: 8, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>{title}</div>
-      <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
-        <svg viewBox="0 0 180 180" style={{ width: 140, height: 140, flexShrink: 0 }}>
-          {paths.map(p => (
-            <path key={p.label} d={p.path} fill={p.color} stroke="#0c1220" strokeWidth="2" />
-          ))}
-          <circle cx={cx} cy={cy} r={34} fill="#0c1220" />
-        </svg>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {paths.map(p => (
-            <div key={p.label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <div style={{ width: 8, height: 8, borderRadius: 2, background: p.color, flexShrink: 0 }} />
-              <span style={{ fontSize: 11.5, color: "#8a9aba" }}>{p.label}</span>
-              <span className="font-mono" style={{ fontSize: 11.5, color: "#c9d1e0", marginLeft: 4 }}>
-                {(p.frac * 100).toFixed(1)}%
-              </span>
-              <span style={{ fontSize: 10.5, color: "#3d4f6a" }}>({fmtBaht(p.value)})</span>
-            </div>
-          ))}
+    <AnimatePresence mode="wait">
+      <motion.div
+        key={metric}
+        initial={{ opacity: 0, scale: 0.94 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.94 }}
+        transition={FADE}
+      >
+        <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+          <svg viewBox="0 0 180 180" style={{ width: 140, height: 140, flexShrink: 0 }}>
+            {paths.map(p => (
+              <path key={p.label} d={p.path} fill={p.color} stroke="#0c1220" strokeWidth="2" />
+            ))}
+            <circle cx={cx} cy={cy} r={34} fill="#0c1220" />
+          </svg>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {paths.map(p => (
+              <div key={p.label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{ width: 8, height: 8, borderRadius: 2, background: p.color, flexShrink: 0 }} />
+                <span style={{ fontSize: 11.5, color: "#8a9aba" }}>{p.label}</span>
+                <span className="font-mono" style={{ fontSize: 11.5, color: "#c9d1e0", marginLeft: 4 }}>
+                  {(p.frac * 100).toFixed(1)}%
+                </span>
+                <span style={{ fontSize: 10.5, color: "#3d4f6a" }}>
+                  (<AnimatedNumber value={p.value} fmt={def.fmt} />)
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </AnimatePresence>
   );
 }
 
-// ─── CPA bar chart (horizontal) ───────────────────────────────────────────────
-function CpaBarChart({ rows, cpak, title }: { rows: Row[]; cpak: string; title: string }) {
-  const sorted = rows.filter(r => Number(r.spend) > 0);
-  if (sorted.length === 0) return <div style={{ color: "#3d4f6a", fontSize: 12 }}>ไม่มีข้อมูล</div>;
-  const values = sorted.map(r => Number(r[cpak]) || 0);
+// ─── MetricBarChart ───────────────────────────────────────────────────────────
+function MetricBarChart({ rows, metric }: { rows: Row[]; metric: string }) {
+  const def = metricOf(metric);
+  const sorted = [...rows]
+    .filter(r => Number(r.spend) > 0)
+    .sort((a, b) => {
+      const va = Number(a[metric]) || 0, vb = Number(b[metric]) || 0;
+      return def.polarity === "cost" ? va - vb : vb - va;
+    });
+  if (!sorted.length) return <div style={{ color: "#3d4f6a", fontSize: 12 }}>ไม่มีข้อมูล</div>;
+
+  const values = sorted.map(r => Number(r[metric]) || 0);
   const max = Math.max(...values, 1);
+
   return (
-    <div>
-      <div style={{ fontSize: 11, color: "#3d4f6a", marginBottom: 10, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>{title}</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-        {sorted.map((row, i) => {
-          const val = values[i];
-          const t = val / max;
-          return (
-            <div key={String(row.key)} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <div style={{ width: 54, fontSize: 11, color: "#8a9aba", flexShrink: 0, textAlign: "right" }}>{String(row.key)}</div>
-              <div style={{ flex: 1, height: 7, background: "rgba(255,255,255,0.05)", borderRadius: 4, overflow: "hidden" }}>
-                <div style={{ width: `${t * 100}%`, height: "100%", background: lerpColor(t), borderRadius: 4, transition: "width 0.6s ease" }} />
-              </div>
-              <div className="font-mono" style={{ width: 62, fontSize: 11, color: "#c9d1e0", flexShrink: 0 }}>
-                {val > 0 ? fmtBaht(val) : "—"}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
+    <AnimatePresence mode="wait">
+      <motion.div key={metric} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={FADE}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+          {sorted.map((row, i) => {
+            const val = values[i];
+            const t = val / max;
+            const color = barColor(t, def.polarity);
+            return (
+              <motion.div
+                key={String(row.key)}
+                layout
+                initial={{ opacity: 0, x: -8 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ ...SPRING, delay: i * 0.03 }}
+                style={{ display: "flex", alignItems: "center", gap: 8 }}
+              >
+                <div style={{ width: 54, fontSize: 11, color: "#8a9aba", flexShrink: 0, textAlign: "right" }}>
+                  {String(row.key)}
+                </div>
+                <div style={{ flex: 1, height: 7, background: "rgba(255,255,255,0.05)", borderRadius: 4, overflow: "hidden" }}>
+                  <motion.div
+                    animate={{ width: `${t * 100}%` }}
+                    transition={SPRING}
+                    style={{ height: "100%", background: color, borderRadius: 4 }}
+                  />
+                </div>
+                <div className="font-mono" style={{ width: 68, fontSize: 11, color: "#c9d1e0", flexShrink: 0 }}>
+                  {val > 0 ? <AnimatedNumber value={val} fmt={def.fmt} /> : "—"}
+                </div>
+              </motion.div>
+            );
+          })}
+        </div>
+      </motion.div>
+    </AnimatePresence>
   );
 }
 
-// ─── CPA gender cards ─────────────────────────────────────────────────────────
-function CpaGenderCards({ rows, cpak }: { rows: Row[]; cpak: string }) {
+// ─── MetricGenderCards ────────────────────────────────────────────────────────
+function MetricGenderCards({ rows, metric }: { rows: Row[]; metric: string }) {
+  const def = metricOf(metric);
   const byGender = Object.fromEntries(rows.map(r => [String(r.key).toLowerCase(), r]));
   const totalSpend = rows.reduce((s, r) => s + Number(r.spend), 0);
+
   function Card({ row, label, color }: { row?: Row; label: string; color: string }) {
-    const cpa = row ? Number(row[cpak]) : 0;
-    const spend = row ? Number(row.spend) : 0;
-    const pct = totalSpend ? (spend / totalSpend) * 100 : 0;
+    const val    = row ? (Number(row[metric]) || 0) : 0;
+    const spend  = row ? Number(row.spend) : 0;
+    const pct    = totalSpend ? (spend / totalSpend) * 100 : 0;
     return (
-      <div style={{ flex: 1, background: "#070c17", border: `1px solid ${color}22`, borderRadius: 12, padding: "14px 16px", borderTop: `2px solid ${color}` }}>
+      <div style={{
+        flex: 1, background: "#070c17", border: `1px solid ${color}22`,
+        borderRadius: 12, padding: "14px 16px", borderTop: `2px solid ${color}`,
+      }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
           <div style={{ width: 8, height: 8, borderRadius: 2, background: color }} />
           <span style={{ fontSize: 12, color: "#8a9aba", fontWeight: 600 }}>{label}</span>
         </div>
-        <div className="font-mono" style={{ fontSize: 22, fontWeight: 600, color, marginBottom: 4 }}>
-          {cpa > 0 ? fmtBaht(cpa) : "—"}
+        <div className="font-mono" style={{ fontSize: 22, fontWeight: 600, color, marginBottom: 6 }}>
+          {val > 0 ? <AnimatedNumber value={val} fmt={def.fmt} /> : "—"}
         </div>
-        <div style={{ fontSize: 11, color: "#3d4f6a" }}>
+        <div style={{ fontSize: 11, color: "#3d4f6a", marginBottom: 6 }}>
           ค่าโฆษณา: <span style={{ color: "#8a9aba" }}>{fmtBaht(spend)}</span>
           <span style={{ marginLeft: 6, color: color + "aa" }}>{pct.toFixed(0)}%</span>
+        </div>
+        <div style={{ height: 4, background: "rgba(255,255,255,0.05)", borderRadius: 2, overflow: "hidden" }}>
+          <motion.div
+            animate={{ width: `${pct}%` }}
+            transition={SPRING}
+            style={{ height: "100%", background: color + "88", borderRadius: 2 }}
+          />
         </div>
       </div>
     );
   }
+
   return (
-    <div>
-      <div style={{ fontSize: 11, color: "#3d4f6a", marginBottom: 10, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>CPA ตามเพศ</div>
-      <div style={{ display: "flex", gap: 10 }}>
-        <Card row={byGender["male"]} label="ชาย" color={GENDER_COLORS.male} />
-        <Card row={byGender["female"]} label="หญิง" color={GENDER_COLORS.female} />
-      </div>
-    </div>
+    <AnimatePresence mode="wait">
+      <motion.div key={metric} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={FADE}>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Card row={byGender["male"]}   label="ชาย"  color={GENDER_COLORS.male}   />
+          <Card row={byGender["female"]} label="หญิง" color={GENDER_COLORS.female} />
+        </div>
+      </motion.div>
+    </AnimatePresence>
   );
 }
 
@@ -192,6 +377,10 @@ function Card({ children, style }: { children: React.ReactNode; style?: React.CS
   );
 }
 
+// ─── Loading skeleton ─────────────────────────────────────────────────────────
+function Sk({ h = "1rem" }: { h?: string }) {
+  return <div className="skeleton" style={{ height: h, width: "100%", borderRadius: 8 }} />;
+}
 function LoadingSkeleton() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -213,10 +402,21 @@ export default function AudienceInsightPage() {
   const [account, setAccount] = useState("");
   const [preset, setPreset] = useState("last_30d");
   const [gender, setGender] = useState<BResult | null>(null);
-  const [age, setAge] = useState<BResult | null>(null);
+  const [age, setAge]       = useState<BResult | null>(null);
   const [region, setRegion] = useState<BResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError]     = useState<string | null>(null);
+
+  // per-box metric state (lazy-init from localStorage)
+  const [genderPieMetric, setGenderPieMetric] = useState(() => lsGet("ai.metric.genderPie", "spend"));
+  const [agePieMetric,    setAgePieMetric]    = useState(() => lsGet("ai.metric.agePie",    "spend"));
+  const [ageBarMetric,    setAgeBarMetric]    = useState(() => lsGet("ai.metric.ageBar",    "cpl"));
+  const [genderCardMetric,setGenderCardMetric]= useState(() => lsGet("ai.metric.genderCard","cpl"));
+  const [mapMetric,       setMapMetric]       = useState(() => lsGet("ai.metric.map",       "cpl"));
+
+  const setAndSave = (setter: (v: string) => void, lsKey: string) => (v: string) => {
+    setter(v); lsSet(lsKey, v);
+  };
 
   useEffect(() => {
     let hidden: string[] = [];
@@ -225,12 +425,21 @@ export default function AudienceInsightPage() {
     fetch("/api/accounts").then(r => r.json()).then((list: Account[]) => {
       if (!Array.isArray(list)) return;
       setAccounts(list);
-      const pool = list.filter(a => !hidden.includes(a.id));
+      const pool    = list.filter(a => !hidden.includes(a.id));
       const visible = pool.length ? pool : list;
-      const first = visible.find(a => a.active) || visible[0];
+      const first   = visible.find(a => a.active) || visible[0];
       if (first) setAccount(first.id);
     }).catch(() => {});
   }, []);
+
+  // when data loads, seed the comparison boxes to the auto-detected CPA key
+  useEffect(() => {
+    if (!gender) return;
+    const auto = autoCpaKey(gender.rows);
+    if (!localStorage.getItem("ai.metric.ageBar"))    { setAgeBarMetric(auto); }
+    if (!localStorage.getItem("ai.metric.genderCard")) { setGenderCardMetric(auto); }
+    if (!localStorage.getItem("ai.metric.map"))        { setMapMetric(auto); }
+  }, [gender]);
 
   const load = useCallback(async () => {
     if (!account) return;
@@ -250,34 +459,36 @@ export default function AudienceInsightPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const genderSlices = gender
-    ? gender.rows.filter(r => Number(r.spend) > 0).map(r => ({
-        label: GENDER_LABEL[String(r.key).toLowerCase()] ?? String(r.key),
-        value: Number(r.spend),
-        color: GENDER_COLORS[String(r.key).toLowerCase()] ?? "#3d4f6a",
-      }))
-    : [];
+  // ── derived data ──────────────────────────────────────────────────────────
+  const genderSlicesFor = (metric: string) => {
+    const def = metricOf(metric);
+    return gender
+      ? gender.rows.filter(r => Number(r.spend) > 0).map(r => ({
+          label: GENDER_LABEL[String(r.key).toLowerCase()] ?? String(r.key),
+          value: Number(r[metric]) || 0,
+          color: GENDER_COLORS[String(r.key).toLowerCase()] ?? "#3d4f6a",
+          fmt:   def.fmt,
+        }))
+      : [];
+  };
 
   const ageRows = age
     ? AGE_ORDER.map(k => age.rows.find(r => String(r.key) === k)).filter((r): r is Row => !!r && Number(r.spend) > 0)
     : [];
+  const ageSlicesFor = (metric: string) =>
+    ageRows.map(r => ({
+      label: String(r.key),
+      value: Number(r[metric]) || 0,
+      color: AGE_COLORS[String(r.key)] ?? "#3d4f6a",
+    }));
 
-  const ageSlices = ageRows.map(r => ({
-    label: String(r.key), value: Number(r.spend),
-    color: AGE_COLORS[String(r.key)] ?? "#3d4f6a",
-  }));
+  const regionRows  = region ? [...region.rows].filter(r => Number(r.spend) > 0).sort((a, b) => Number(b.spend) - Number(a.spend)) : [];
+  const mapDef      = metricOf(mapMetric);
+  const mapVals     = regionRows.map(r => Number(r[mapMetric])).filter(v => v > 0);
+  const minMapVal   = Math.min(...mapVals, 0);
+  const maxMapVal   = Math.max(...mapVals, 1);
+  const [mapLow, mapHigh] = mapColors(mapDef.polarity);
 
-  const cpak = gender ? cpaKey(gender.rows) : "cpl";
-  const cpaLbl = cpaLabel(cpak);
-
-  const regionRows = region
-    ? [...region.rows].filter(r => Number(r.spend) > 0).sort((a, b) => Number(b.spend) - Number(a.spend))
-    : [];
-  const cpaVals = regionRows.map(r => Number(r[cpak])).filter(v => v > 0);
-  const minCpa = Math.min(...cpaVals, 0), maxCpa = Math.max(...cpaVals, 1);
-
-  // Drop accounts hidden in Workspace Settings from the picker (unless every account is
-  // hidden — then fall back to showing all, matching the dashboard's behavior).
   const visibleAccounts =
     hiddenAccts.length && hiddenAccts.length < accounts.length
       ? accounts.filter(a => !hiddenAccts.includes(a.id))
@@ -285,6 +496,7 @@ export default function AudienceInsightPage() {
 
   return (
     <div style={{ padding: "28px 28px", background: "#060a12", minHeight: "100vh" }}>
+      {/* ── Header ── */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24, flexWrap: "wrap" }}>
         <div>
           <h1 style={{ fontSize: 18, fontWeight: 700, color: "#e8eaf5", margin: 0 }}>วิเคราะห์กลุ่มเป้าหมาย</h1>
@@ -316,27 +528,42 @@ export default function AudienceInsightPage() {
 
       {loading ? <LoadingSkeleton /> : (
         <>
+          {/* ── Row 1: pies ── */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
-            <Card><PieChart slices={genderSlices} title="ค่าโฆษณาตามเพศ" /></Card>
-            <Card><PieChart slices={ageSlices} title="ค่าโฆษณาตามอายุ" /></Card>
+            <Card>
+              <CardHeader title="แบ่งตามเพศ" options={ADDITIVE_METRICS} metric={genderPieMetric} onMetric={setAndSave(setGenderPieMetric, "ai.metric.genderPie")} />
+              <PieChart slices={genderSlicesFor(genderPieMetric)} metric={genderPieMetric} />
+            </Card>
+            <Card>
+              <CardHeader title="แบ่งตามอายุ" options={ADDITIVE_METRICS} metric={agePieMetric} onMetric={setAndSave(setAgePieMetric, "ai.metric.agePie")} />
+              <PieChart slices={ageSlicesFor(agePieMetric)} metric={agePieMetric} />
+            </Card>
           </div>
+
+          {/* ── Row 2: bar + gender cards ── */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
-            <Card><CpaBarChart rows={ageRows} cpak={cpak} title={`${cpaLbl} ตามอายุ`} /></Card>
-            <Card>{gender && <CpaGenderCards rows={gender.rows} cpak={cpak} />}</Card>
+            <Card>
+              <CardHeader title="เปรียบเทียบตามอายุ" options={ALL_METRICS} metric={ageBarMetric} onMetric={setAndSave(setAgeBarMetric, "ai.metric.ageBar")} />
+              <MetricBarChart rows={ageRows} metric={ageBarMetric} />
+            </Card>
+            <Card>
+              <CardHeader title="เปรียบเทียบตามเพศ" options={ALL_METRICS} metric={genderCardMetric} onMetric={setAndSave(setGenderCardMetric, "ai.metric.genderCard")} />
+              {gender && <MetricGenderCards rows={gender.rows} metric={genderCardMetric} />}
+            </Card>
           </div>
+
+          {/* ── Row 3: Thailand heatmap ── */}
           <Card>
-            <div style={{ fontSize: 11, color: "#3d4f6a", marginBottom: 14, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>
-              แผนที่ความร้อน — {cpaLbl} รายจังหวัด
-            </div>
+            <CardHeader title="แผนที่ความร้อน — รายจังหวัด" options={ALL_METRICS} metric={mapMetric} onMetric={setAndSave(setMapMetric, "ai.metric.map")} />
             {region && region.rows.length > 0 ? (
               <div style={{ display: "grid", gridTemplateColumns: "minmax(320px,1fr) 1fr", gap: 20 }}>
                 <div>
                   <div style={{ background: "#070c17", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 12, padding: "12px", textAlign: "center" }}>
-                    <ThailandMap rows={region.rows} metricKey={cpak} fmt={fmtBaht} />
+                    <ThailandMap rows={region.rows} metricKey={mapMetric} fmt={v => fmtMetric(v, mapDef.fmt)} colors={[mapLow, mapHigh]} />
                     <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "center", marginTop: 10, color: "#3d4f6a", fontSize: 11 }}>
-                      <span>{cpaLbl} ต่ำ</span>
-                      <div style={{ width: 128, height: 6, borderRadius: 3, background: "linear-gradient(90deg, #26303d, #ff3b3b)" }} />
-                      <span>{cpaLbl} สูง</span>
+                      <span>{mapDef.label} {mapDef.polarity === "cost" ? "ต่ำ" : mapDef.polarity === "good" ? "น้อย" : "น้อย"}</span>
+                      <div style={{ width: 128, height: 6, borderRadius: 3, background: `linear-gradient(90deg, ${mapLow}, ${mapHigh})` }} />
+                      <span>{mapDef.label} {mapDef.polarity === "cost" ? "สูง" : "มาก"}</span>
                     </div>
                   </div>
                 </div>
@@ -345,21 +572,26 @@ export default function AudienceInsightPage() {
                   <div style={{ display: "flex", gap: 6, marginBottom: 6, padding: "0 4px" }}>
                     <div style={{ flex: 1, fontSize: 10, color: "#2a3a50" }}>จังหวัด</div>
                     <div style={{ width: 60, fontSize: 10, color: "#2a3a50", textAlign: "right" }}>ค่าโฆษณา</div>
-                    <div style={{ width: 66, fontSize: 10, color: "#2a3a50", textAlign: "right" }}>{cpaLbl}</div>
+                    <div style={{ width: 70, fontSize: 10, color: "#2a3a50", textAlign: "right" }}>{mapDef.label}</div>
                   </div>
-                  {regionRows.slice(0, 18).map(r => {
-                    const cpa = Number(r[cpak]);
-                    const t = maxCpa > minCpa ? (cpa - minCpa) / (maxCpa - minCpa) : 0;
-                    return (
-                      <div key={String(r.key)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 4px", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                        <div style={{ flex: 1, fontSize: 11.5, color: "#8a9aba", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{String(r.key)}</div>
-                        <div className="font-mono" style={{ width: 60, fontSize: 11, color: "#c9d1e0", textAlign: "right" }}>{fmtBaht(Number(r.spend))}</div>
-                        <div className="font-mono" style={{ width: 66, fontSize: 11, color: cpa > 0 ? lerpColor(t) : "#3d4f6a", textAlign: "right" }}>
-                          {cpa > 0 ? fmtBaht(cpa) : "—"}
-                        </div>
-                      </div>
-                    );
-                  })}
+                  <AnimatePresence mode="wait">
+                    <motion.div key={mapMetric} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={FADE}>
+                      {regionRows.slice(0, 18).map(r => {
+                        const val = Number(r[mapMetric]);
+                        const t   = maxMapVal > minMapVal ? (val - minMapVal) / (maxMapVal - minMapVal) : 0;
+                        const color = val > 0 ? lerpHex(mapLow, mapHigh, t) : "#3d4f6a";
+                        return (
+                          <motion.div key={String(r.key)} layout style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 4px", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                            <div style={{ flex: 1, fontSize: 11.5, color: "#8a9aba", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{String(r.key)}</div>
+                            <div className="font-mono" style={{ width: 60, fontSize: 11, color: "#c9d1e0", textAlign: "right" }}>{fmtBaht(Number(r.spend))}</div>
+                            <div className="font-mono" style={{ width: 70, fontSize: 11, color, textAlign: "right" }}>
+                              {val > 0 ? <AnimatedNumber value={val} fmt={mapDef.fmt} /> : "—"}
+                            </div>
+                          </motion.div>
+                        );
+                      })}
+                    </motion.div>
+                  </AnimatePresence>
                 </div>
               </div>
             ) : (

@@ -13,8 +13,8 @@ function lerp(a: string, b: string, t: number) {
 }
 
 export function ThailandMap({
-  rows, metricKey, fmt,
-}: { rows: Record<string, any>[]; metricKey: string; fmt: (v: number) => string }) {
+  rows, metricKey, fmt, colors = ["#26303d", "#ff3b3b"],
+}: { rows: Record<string, any>[]; metricKey: string; fmt: (v: number) => string; colors?: [string, string] }) {
   const [geo, setGeo] = useState<Geo | null>(GEO_CACHE);
 
   useEffect(() => {
@@ -49,7 +49,7 @@ export function ThailandMap({
       {geo.features.map((f, i) => {
         const v = vals[norm(f.properties.name)] || 0;
         const t = max ? Math.sqrt(v / max) : 0;
-        const fill = v > 0 ? lerp("#26303d", "#ff3b3b", t) : "#161d27";
+        const fill = v > 0 ? lerp(colors[0], colors[1], t) : "#161d27";
         return (
           <path key={i} d={pathOf(f.geometry)} fill={fill} stroke="#0a0e14" strokeWidth={0.4}
             className="transition-colors hover:stroke-white hover:[stroke-width:1.2]">
