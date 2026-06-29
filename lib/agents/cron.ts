@@ -6,6 +6,7 @@ import { getLevel, getAccounts } from "@/lib/fb";
 import { executeAction, rawApply } from "./actions";
 import { runAgentTurn } from "./providers";
 import { computeTrueRoas, type TrueRoasRow } from "@/lib/leads/roas";
+import { sendRuleAlert } from "./lark-report";
 import type { RuleOp, RuleRunItem } from "./types";
 
 const TRUE_METRICS = new Set(['true_roas', 'true_cac', 'real_cvr']);
@@ -162,6 +163,17 @@ export async function runRule(agentId: string, ruleId: string, trigger: "schedul
 
   await addRuleRun(ruleId, { status: dryRun ? "dry-run" : "applied", summary }).catch(() => {});
   await addLog(agentId || "system", { type: "rule", message: `[${rule.name || ruleId}] ${summary}` }).catch(() => {});
+
+  // Live Lark alert — only when real actions were applied (never on dry-run). No-op if
+  // LARK_WEBHOOK_URL is unset; wrapped so a Lark failure never affects rule execution.
+  if (!dryRun) {
+    const applied = items.filter((i) => i.status === "applied");
+    if (applied.length) {
+      await sendRuleAlert(rule.name || ruleId, targetAccount, applied.map((i) => ({
+        entityName: i.entityName, action: i.action, metric: i.metric, value: i.value,
+      }))).catch(() => {});
+    }
+  }
 
   // stamp lastRunAt on the rule
   await saveRule(agentId, {
