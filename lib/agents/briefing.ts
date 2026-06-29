@@ -7,8 +7,11 @@
 // on CPL), auto-detected from whether the account produced revenue in the window.
 import { getLevel, getAccounts, type Row } from "@/lib/fb";
 import { resolveCompareRanges } from "./dates";
+import { computeTrueRoas, type TrueRoasRow } from "@/lib/leads/roas";
+import { classifyTrueMetric } from "./briefing-classify";
 function newId() { return crypto.randomUUID().replace(/-/g, '').slice(0, 16) }
 import type { Briefing, BriefingItem, BriefingKind, BriefingSeverity, BriefingMetric } from "./types";
+export { classifyTrueMetric } from "./briefing-classify";
 
 export interface BriefingOptions {
   preset?: string;      // metric window, default "last_7d"
@@ -24,10 +27,12 @@ const FATIGUE_FREQ = 3.5;               // frequency at/above → fatigue candid
 const SCALE_ROAS_RATIO = 1.5;           // ad ROAS ≥ 150% of account avg → scale
 const SCALE_CPL_RATIO = 0.6;            // ad CPL ≤ 60% of account avg → scale
 const SCALE_BUDGET_STEP = 1.3;          // +30% daily budget when scaling
+const COVERAGE_MIN = 0.4;              // below this account-level coverage → skip true-ROAS cards
 
 const SEVERITY: Record<BriefingKind, BriefingSeverity> = {
   wasting: "critical", declining: "warning", underperforming: "warning",
   fatigue: "info", scaling: "opportunity",
+  real_loser: "critical", hidden_winner: "opportunity",
 };
 
 const num = (v: unknown) => Number(v) || 0;
@@ -36,18 +41,27 @@ const baht = (v: number) => "฿" + Math.round(v).toLocaleString("en-US");
 const pctChange = (cur: number, prev: number): number | null => (prev ? round(((cur - prev) / prev) * 100, 1) : null);
 const results = (r: Row) => num(r.purchases) + num(r.leads) + num(r.messaging);
 
+
 export async function buildBriefing(accountId: string, opts: BriefingOptions = {}): Promise<Briefing> {
   const preset = opts.preset || "last_7d";
   const minSpend = opts.minSpend ?? DEFAULT_MIN_SPEND;
   const { cur, prev } = resolveCompareRanges(preset);
 
-  const [curRes, prevRes, accounts] = await Promise.all([
+  const [curRes, prevRes, accounts, trueRoasResult] = await Promise.all([
     getLevel(accountId, "ad", "", cur.since, cur.until),
     getLevel(accountId, "ad", "", prev.since, prev.until),
     getAccounts().catch(() => [] as { id: string; name: string }[]),
+    computeTrueRoas(accountId, 'ad', preset).catch(() => null),
   ]);
   const accountName = (accounts as { id: string; name: string }[]).find((a) => a.id === accountId)?.name;
   const prevById = new Map(prevRes.rows.map((r) => [String(r.id), r]));
+
+  // True ROAS index + account-level coverage guard.
+  const trueByAdId = trueRoasResult
+    ? new Map<string, TrueRoasRow>(trueRoasResult.rows.map((r) => [r.id, r]))
+    : new Map<string, TrueRoasRow>();
+  const trueCoverage = trueRoasResult?.coverage ?? null;
+  const coverageOk = trueCoverage != null && trueCoverage >= COVERAGE_MIN;
 
   // Account-level benchmarks (current window).
   const t = curRes.totals;
@@ -74,11 +88,14 @@ export async function buildBriefing(accountId: string, opts: BriefingOptions = {
     const roasDelta = p ? pctChange(roas, num(p.roas)) : null;
     const cplDelta = p ? pctChange(cpl, num(p.cpl)) : null;
     const ctrDelta = p ? pctChange(ctr, num(p.ctr)) : null;
+    const trueRow = coverageOk ? trueByAdId.get(id) : undefined;
 
     // Evaluate signals in priority order; one item per ad.
     let kind: BriefingKind | null = null;
     if (active && results(r) === 0 && roas === 0) {
       kind = "wasting";
+    } else if (active && trueRow && classifyTrueMetric(trueRow.fbRoas, trueRow.trueRoas, trueRow.realCustomers) === 'real_loser') {
+      kind = "real_loser";
     } else if (active && p && (
       (revenueAccount && roasDelta !== null && roasDelta <= DECLINE_PCT && num(p.roas) > 0) ||
       (!revenueAccount && cplDelta !== null && cplDelta >= -DECLINE_PCT && num(p.leads) > 0)
@@ -91,6 +108,8 @@ export async function buildBriefing(accountId: string, opts: BriefingOptions = {
       kind = "underperforming";
     } else if (active && freq >= FATIGUE_FREQ && (num(ctrDelta) < 0 || (acctCtr > 0 && ctr < acctCtr * 0.8))) {
       kind = "fatigue";
+    } else if (active && dailyBudget > 0 && trueRow && classifyTrueMetric(trueRow.fbRoas, trueRow.trueRoas, trueRow.realCustomers) === 'hidden_winner') {
+      kind = "hidden_winner";
     } else if (active && dailyBudget > 0 && (
       (revenueAccount && acctRoas > 0 && roas >= acctRoas * SCALE_ROAS_RATIO) ||
       (!revenueAccount && acctCpl > 0 && cpl > 0 && cpl <= acctCpl * SCALE_CPL_RATIO)
@@ -99,7 +118,7 @@ export async function buildBriefing(accountId: string, opts: BriefingOptions = {
     }
     if (!kind) continue;
 
-    items.push(makeItem(kind, { id, name, campaign, spend, roas, cpl, ctr, freq, dailyBudget, roasDelta, cplDelta, ctrDelta, revenueAccount, r }));
+    items.push(makeItem(kind, { id, name, campaign, spend, roas, cpl, ctr, freq, dailyBudget, roasDelta, cplDelta, ctrDelta, revenueAccount, r, trueRow, coverage: trueCoverage }));
   }
 
   items.sort((a, b) => b.score - a.score);
@@ -128,6 +147,10 @@ interface ItemCtx {
   spend: number; roas: number; cpl: number; ctr: number; freq: number; dailyBudget: number;
   roasDelta: number | null; cplDelta: number | null; ctrDelta: number | null;
   revenueAccount: boolean; r: Row;
+  /** True ROAS row for this ad (present only when coverage threshold met) */
+  trueRow?: TrueRoasRow;
+  /** Account-level attribution coverage 0–1 (null = no spend data) */
+  coverage?: number | null;
 }
 
 function makeItem(kind: BriefingKind, c: ItemCtx): BriefingItem {
@@ -151,6 +174,24 @@ function makeItem(kind: BriefingKind, c: ItemCtx): BriefingItem {
         metrics: [spendM, { label: "Conversions", value: "0" }, perfM],
         proposal: pauseProposal(c, `Pause '${c.name}' — ${baht(c.spend)} spent, 0 conversions`),
       };
+    case "real_loser": {
+      const tr = c.trueRow!;
+      const fbRoasStr = (tr.fbRoas ?? 0).toFixed(2);
+      const gapPct = tr.gap != null ? Math.round(tr.gap * 100) : null;
+      const covPct = c.coverage != null ? Math.round(c.coverage * 100) + "%" : "—";
+      return {
+        ...base, score: 900 + c.spend,
+        headline: `FB says ROAS ${fbRoasStr} — real sales ${baht(tr.realRevenue)}${gapPct != null ? ` (${gapPct}% gap)` : ""}`,
+        detail: `${baht(c.spend)} spent. Facebook reports ROAS ${fbRoasStr} but tracked real revenue is ${baht(tr.realRevenue)} (${tr.realCustomers} won customer${tr.realCustomers !== 1 ? "s" : ""}). Attribution coverage ${covPct}.`,
+        metrics: [
+          { label: "FB ROAS", value: fbRoasStr },
+          { label: "TRUE ROAS", value: tr.trueRoas != null ? tr.trueRoas.toFixed(2) : "0", upIsGood: true },
+          { label: "Real Revenue", value: baht(tr.realRevenue) },
+          { label: "Coverage", value: covPct },
+        ],
+        proposal: pauseProposal(c, `Pause '${c.name}' — FB ROAS ${fbRoasStr} but ${tr.realCustomers} real customer${tr.realCustomers !== 1 ? "s" : ""}`),
+      };
+    }
     case "declining": {
       const drop = c.revenueAccount ? c.roasDelta : c.cplDelta;
       return {
@@ -177,6 +218,28 @@ function makeItem(kind: BriefingKind, c: ItemCtx): BriefingItem {
         metrics: [freqM, ctrM, spendM],
         // no auto-action: refreshing creative can't be done via this API surface
       };
+    case "hidden_winner": {
+      const tr = c.trueRow!;
+      const trueRoasStr = (tr.trueRoas ?? 0).toFixed(2);
+      const fbRoasStr = (tr.fbRoas ?? 0).toFixed(2);
+      const covPct = c.coverage != null ? Math.round(c.coverage * 100) + "%" : "—";
+      return {
+        ...base, score: 300 + c.spend,
+        headline: `Underrated — TRUE ROAS ${trueRoasStr} vs FB ${fbRoasStr}; scale it`,
+        detail: `Real tracked revenue ${baht(tr.realRevenue)} from ${tr.realCustomers} customer${tr.realCustomers !== 1 ? "s" : ""}. TRUE ROAS ${trueRoasStr} beats FB's ${fbRoasStr} — this ad outperforms what the dashboard shows. Coverage ${covPct}.`,
+        metrics: [
+          { label: "TRUE ROAS", value: trueRoasStr, upIsGood: true },
+          { label: "FB ROAS", value: fbRoasStr },
+          { label: "Real Revenue", value: baht(tr.realRevenue) },
+          { label: "Coverage", value: covPct },
+        ],
+        proposal: {
+          tool: "set_budget",
+          args: { id: c.id, dailyBudget: round(c.dailyBudget * SCALE_BUDGET_STEP, 0), _spend: c.spend },
+          summary: `Raise '${c.name}' budget to ${baht(c.dailyBudget * SCALE_BUDGET_STEP)}/day (+30%) — TRUE ROAS ${trueRoasStr}`,
+        },
+      };
+    }
     case "scaling":
       return {
         ...base, score: 200 + c.spend,

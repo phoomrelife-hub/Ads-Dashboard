@@ -4,6 +4,7 @@
 // only after the user confirms.
 import { getAccounts, getLevel, getBreakdown, type Level, type Dim, type Row } from "@/lib/fb";
 import { resolveCompareRanges } from "./dates";
+import { computeTrueRoas } from "@/lib/leads/roas";
 
 export interface ToolSchema {
   name: string;
@@ -31,7 +32,7 @@ export const TOOLS: ToolSchema[] = [
   {
     name: "get_insights",
     description:
-      "Fetch the FULL performance metric set (spend, revenue, ROAS, leads, CPL, purchases, cost/purchase, messaging, reach, impressions, frequency, CPM, CPC, CTR, clicks, link clicks/CTR, landing page views, add-to-cart, checkout, and video funnel: views, thruplays, 25/50/75/100% retention, avg watch) for campaigns, adsets, or ads in the scoped account over a time window. Set compare=true to ALSO get the previous equal-length period plus per-row % deltas — use this to detect change (e.g. \"ROAS down 38% week-over-week\"). Always gather data here before proposing actions.",
+      "Fetch the FULL performance metric set (spend, revenue, ROAS, leads, CPL, purchases, cost/purchase, messaging, reach, impressions, frequency, CPM, CPC, CTR, clicks, link clicks/CTR, landing page views, add-to-cart, checkout, and video funnel: views, thruplays, 25/50/75/100% retention, avg watch) for campaigns, adsets, or ads in the scoped account over a time window. Set compare=true to ALSO get the previous equal-length period plus per-row % deltas — use this to detect change (e.g. \"ROAS down 38% week-over-week\"). When querying campaigns or ads, each row also includes a `true` block with real-sales-based metrics (trueRoas, trueCac, realRevenue, realCustomers, gap, cvr) when the telesales team has logged sales, plus a top-level `attribution` object (coverage, unattributedLeads). Use these to cross-check Facebook's reported ROAS against actual customer revenue. Always gather data here before proposing actions.",
     input_schema: {
       type: "object",
       properties: {
@@ -226,17 +227,53 @@ export async function runReadTool(
         });
         const curTotals = enrichTotals(curRes.totals);
         const prevTotals = enrichTotals(prevRes.totals);
+
+        // Enrich with true ROAS data when available (campaign/ad level only).
+        let attribution: { coverage: number | null; unattributedLeads: number } | undefined;
+        if (level === 'campaign' || level === 'ad') {
+          try {
+            const trueResult = await computeTrueRoas(acct, level, 'last_7d', cur.since, cur.until);
+            const trueById = new Map(trueResult.rows.map((r) => [r.id, r]));
+            attribution = { coverage: trueResult.coverage, unattributedLeads: trueResult.unattributedLeads };
+            for (const row of rows) {
+              const tr = trueById.get(String(row.id));
+              if (tr) {
+                (row as any).true = { realRevenue: tr.realRevenue, realCustomers: tr.realCustomers, trueRoas: tr.trueRoas, trueCac: tr.trueCac, gap: tr.gap, won: tr.won, cvr: tr.cvr };
+              }
+            }
+          } catch { /* skip enrichment on error — never break the tool */ }
+        }
+
         return {
           level, period: cur, previousPeriod: prev,
           totals: curTotals, previousTotals: prevTotals,
           totalsDelta: deltaBlock(curTotals, prevTotals),
           rows,
+          ...(attribution ? { attribution } : {}),
         };
       }
 
       const preset = String(args.datePreset || "last_7d");
       const result = await getLevel(acct, level, preset, args.since, args.until);
-      return { level, totals: enrichTotals(result.totals), rows: result.rows.slice(0, 50).map(slimRow) };
+      const slimRows = result.rows.slice(0, 50).map(slimRow);
+
+      // Enrich with true ROAS data when available (campaign/ad level only).
+      let attribution: { coverage: number | null; unattributedLeads: number } | undefined;
+      if (level === 'campaign' || level === 'ad') {
+        try {
+          const trueResult = await computeTrueRoas(acct, level, preset, args.since, args.until);
+          const trueById = new Map(trueResult.rows.map((r) => [r.id, r]));
+          attribution = { coverage: trueResult.coverage, unattributedLeads: trueResult.unattributedLeads };
+          for (const row of slimRows) {
+            const tr = trueById.get(String(row.id));
+            if (tr) {
+              (row as any).true = { realRevenue: tr.realRevenue, realCustomers: tr.realCustomers, trueRoas: tr.trueRoas, trueCac: tr.trueCac, gap: tr.gap, won: tr.won, cvr: tr.cvr };
+            }
+          }
+        } catch { /* skip enrichment on error — never break the tool */ }
+      }
+
+      return { level, totals: enrichTotals(result.totals), rows: slimRows, ...(attribution ? { attribution } : {}) };
     }
 
     case "get_breakdown": {

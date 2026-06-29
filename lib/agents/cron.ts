@@ -5,7 +5,10 @@ import { getRules, getAgentWithKey, addLog, addRuleRun, saveRule, toProviderAgen
 import { getLevel, getAccounts } from "@/lib/fb";
 import { executeAction, rawApply } from "./actions";
 import { runAgentTurn } from "./providers";
+import { computeTrueRoas, type TrueRoasRow } from "@/lib/leads/roas";
 import type { RuleOp, RuleRunItem } from "./types";
+
+const TRUE_METRICS = new Set(['true_roas', 'true_cac', 'real_cvr']);
 
 function compare(a: number, op: RuleOp, b: number): boolean {
   switch (op) {
@@ -69,22 +72,63 @@ export async function runRule(agentId: string, ruleId: string, trigger: "schedul
     // structured condition (iterate every account when the target is "all")
     if (rule.condition && typeof rule.condition === 'object') {
       const { metric, op, value } = rule.condition;
+      const isTrueMetric = TRUE_METRICS.has(metric);
       const accountIds = targetAccount === "all"
         ? (await getAccounts()).map((a: any) => a.id)
         : [targetAccount];
       let matched = false;
       for (const acct of accountIds) {
-        const { rows } = await getLevel(acct, rule.level || 'ad', rule.datePreset || 'today');
-        const matches = rows.filter((r: any) => compare(Number(r[metric]) || 0, op as RuleOp, value));
-        for (const m of matches) {
-          matched = true;
-          const mv = Number((Number(m[metric]) || 0).toFixed(2));
-          const { tool, args, label } = mapAction(rule.action, String(m.id));
-          const base = { entityId: String(m.id), entityName: String(m.name || m.id), level: rule.level, metric, value: mv, action: label };
-          if (dryRun) items.push({ ...base, status: "dry-run" });
-          else {
-            try { await rawApply(tool, args); items.push({ ...base, status: "applied" }); }
-            catch (e: any) { items.push({ ...base, status: "error", note: e.message }); }
+        if (isTrueMetric) {
+          // True-metric branch: compare against tracked real-sales data.
+          const trueLevel: 'campaign' | 'ad' = rule.level === 'campaign' ? 'campaign' : 'ad';
+          const trueResult = await computeTrueRoas(acct, trueLevel, rule.datePreset || 'today');
+
+          // Coverage guard: refuse to act when attribution is too thin.
+          if (trueResult.coverage == null || trueResult.coverage < 0.5) {
+            const covPct = trueResult.coverage != null ? Math.round(trueResult.coverage * 100) + '%' : '0%';
+            items.push({
+              entityName: `Account ${acct}`,
+              action: "skip",
+              status: "info",
+              note: `Insufficient attribution coverage (${covPct}) — skipped`,
+            });
+            continue;
+          }
+
+          const getTrueVal = (row: TrueRoasRow): number | null => {
+            if (metric === 'true_roas') return row.trueRoas;
+            if (metric === 'true_cac') return row.trueCac;
+            if (metric === 'real_cvr') return row.cvr;
+            return null;
+          };
+
+          for (const trueRow of trueResult.rows) {
+            const mv = getTrueVal(trueRow);
+            if (mv == null) continue; // no data for this entity — skip
+            if (!compare(mv, op as RuleOp, value)) continue;
+            matched = true;
+            const { tool, args, label } = mapAction(rule.action, trueRow.id);
+            const base = { entityId: trueRow.id, entityName: trueRow.name, level: rule.level, metric, value: Number(mv.toFixed(2)), action: label };
+            if (dryRun) items.push({ ...base, status: "dry-run" });
+            else {
+              try { await rawApply(tool, args); items.push({ ...base, status: "applied" }); }
+              catch (e: any) { items.push({ ...base, status: "error", note: e.message }); }
+            }
+          }
+        } else {
+          // Original FB-metric branch (byte-for-byte unchanged).
+          const { rows } = await getLevel(acct, rule.level || 'ad', rule.datePreset || 'today');
+          const matches = rows.filter((r: any) => compare(Number(r[metric]) || 0, op as RuleOp, value));
+          for (const m of matches) {
+            matched = true;
+            const mv = Number((Number(m[metric]) || 0).toFixed(2));
+            const { tool, args, label } = mapAction(rule.action, String(m.id));
+            const base = { entityId: String(m.id), entityName: String(m.name || m.id), level: rule.level, metric, value: mv, action: label };
+            if (dryRun) items.push({ ...base, status: "dry-run" });
+            else {
+              try { await rawApply(tool, args); items.push({ ...base, status: "applied" }); }
+              catch (e: any) { items.push({ ...base, status: "error", note: e.message }); }
+            }
           }
         }
       }
