@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAgents } from "@/lib/agents/store";
 import { runDueRules } from "@/lib/agents/cron";
+import { ingestLeads } from "@/lib/leads/ingest";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -20,7 +21,16 @@ async function handle(req: NextRequest) {
       const ran = await runDueRules(agent.id, force);
       all.push(...ran);
     }
-    return NextResponse.json({ ok: true, ran: all, at: Date.now() });
+    // Ingest FB lead forms — wrapped in its own try/catch so a lead-polling failure
+    // never breaks rule running. Result is additive to the JSON response.
+    let leads = { scanned: 0, created: 0 };
+    try {
+      leads = await ingestLeads();
+    } catch (e: any) {
+      console.error("[cron/tick] ingestLeads threw unexpectedly:", e?.message);
+    }
+
+    return NextResponse.json({ ok: true, ran: all, leads, at: Date.now() });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }

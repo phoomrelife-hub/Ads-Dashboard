@@ -130,3 +130,48 @@ alter table office_layout disable row level security;
 alter table fb_accounts disable row level security;
 alter table fb_pages disable row level security;
 alter table insights_snapshots disable row level security;
+
+-- ── Leads (lead → sale tracker) ───────────────────────────────────────────────
+
+create table if not exists leads (
+  id            text primary key,
+  account_id    text not null,
+  phone         text not null,
+  name          text,
+  campaign_id   text,
+  adset_id      text,
+  ad_id         text,
+  campaign_name text,
+  ad_name       text,
+  source        text not null default 'manual',
+  status        text not null default 'new',
+  sale_amount   numeric,
+  product       text,
+  lost_reason   text,
+  fb_lead_id    text,
+  contacted_at  timestamptz,
+  won_at        timestamptz,
+  lost_at       timestamptz,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
+);
+
+create index if not exists leads_account_status_idx on leads (account_id, status);
+create index if not exists leads_account_ad_idx on leads (account_id, ad_id);
+create index if not exists leads_phone_idx on leads (phone);
+-- Partial unique: only one row per FB lead id (nulls are excluded by WHERE clause)
+create unique index if not exists leads_fb_lead_id_unique on leads (fb_lead_id) where fb_lead_id is not null;
+
+create table if not exists lead_events (
+  id       text primary key default gen_random_uuid()::text,
+  lead_id  text not null references leads(id) on delete cascade,
+  ts       timestamptz not null default now(),
+  kind     text not null,
+  note     text,
+  agent    text
+);
+
+create index if not exists lead_events_lead_id_idx on lead_events (lead_id);
+
+alter table leads disable row level security;
+alter table lead_events disable row level security;
