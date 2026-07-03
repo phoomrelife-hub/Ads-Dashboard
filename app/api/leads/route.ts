@@ -13,8 +13,10 @@ export async function GET(req: NextRequest) {
     const rawStatus = sp.get("status") || "all";
     const status = rawStatus as LeadStatus | "all";
     const search = sp.get("search") || undefined;
+    const limit = sp.get("limit") ? Number(sp.get("limit")) : undefined;
+    const offset = sp.get("offset") ? Number(sp.get("offset")) : undefined;
     const [leads, counts] = await Promise.all([
-      listLeads(account, { status, search }),
+      listLeads(account, { status, search, limit, offset }),
       leadCounts(account),
     ]);
     return NextResponse.json({ leads, counts });

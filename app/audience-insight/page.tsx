@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useMotionValue, animate } from "framer-motion";
 import { ThailandMap } from "@/components/thailand-map";
+import { useAccountRanking } from "@/components/account-ranking";
 
 type Row = Record<string, string | number>;
 type BResult = { rows: Row[]; totals: Record<string, number> };
@@ -276,6 +277,13 @@ function MetricBarChart({ rows, metric }: { rows: Row[]; metric: string }) {
       return def.polarity === "cost" ? va - vb : vb - va;
     });
   if (!sorted.length) return <div style={{ color: "#3d4f6a", fontSize: 12 }}>ไม่มีข้อมูล</div>;
+  const hasAnyValue = sorted.some(r => Number(r[metric]) > 0);
+  if (!hasAnyValue) return (
+    <div style={{ padding: "24px 0", textAlign: "center" }}>
+      <div style={{ fontSize: 12, color: "#4a5a7a", fontWeight: 600, marginBottom: 4 }}>ไม่มีข้อมูล {def.label}</div>
+      <div style={{ fontSize: 11, color: "#2a3a50" }}>บัญชีนี้ไม่ได้ติดตาม conversion ประเภทนี้</div>
+    </div>
+  );
 
   const values = sorted.map(r => Number(r[metric]) || 0);
   const max = Math.max(...values, 1);
@@ -324,6 +332,7 @@ function MetricGenderCards({ rows, metric }: { rows: Row[]; metric: string }) {
   const def = metricOf(metric);
   const byGender = Object.fromEntries(rows.map(r => [String(r.key).toLowerCase(), r]));
   const totalSpend = rows.reduce((s, r) => s + Number(r.spend), 0);
+  // `def` is used below in the no-data empty state
 
   function Card({ row, label, color }: { row?: Row; label: string; color: string }) {
     const val    = row ? (Number(row[metric]) || 0) : 0;
@@ -356,13 +365,22 @@ function MetricGenderCards({ rows, metric }: { rows: Row[]; metric: string }) {
     );
   }
 
+  const hasAnyValue = rows.some(r => Number(r[metric]) > 0);
+
   return (
     <AnimatePresence mode="wait">
       <motion.div key={metric} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={FADE}>
-        <div style={{ display: "flex", gap: 10 }}>
-          <Card row={byGender["male"]}   label="ชาย"  color={GENDER_COLORS.male}   />
-          <Card row={byGender["female"]} label="หญิง" color={GENDER_COLORS.female} />
-        </div>
+        {hasAnyValue ? (
+          <div style={{ display: "flex", gap: 10 }}>
+            <Card row={byGender["male"]}   label="ชาย"  color={GENDER_COLORS.male}   />
+            <Card row={byGender["female"]} label="หญิง" color={GENDER_COLORS.female} />
+          </div>
+        ) : (
+          <div style={{ padding: "24px 0", textAlign: "center" }}>
+            <div style={{ fontSize: 12, color: "#4a5a7a", fontWeight: 600, marginBottom: 4 }}>ไม่มีข้อมูล {def.label}</div>
+            <div style={{ fontSize: 11, color: "#2a3a50" }}>Facebook ไม่รายงาน metric นี้แบบแยกกลุ่ม</div>
+          </div>
+        )}
       </motion.div>
     </AnimatePresence>
   );
@@ -413,6 +431,8 @@ export default function AudienceInsightPage() {
   const [ageBarMetric,    setAgeBarMetric]    = useState(() => lsGet("ai.metric.ageBar",    "cpl"));
   const [genderCardMetric,setGenderCardMetric]= useState(() => lsGet("ai.metric.genderCard","cpl"));
   const [mapMetric,       setMapMetric]       = useState(() => lsGet("ai.metric.map",       "cpl"));
+  const [mapMetric2,      setMapMetric2]      = useState(() => lsGet("ai.metric.map2",      "roas"));
+  const [mapCompare,      setMapCompare]      = useState(false);
 
   const setAndSave = (setter: (v: string) => void, lsKey: string) => (v: string) => {
     setter(v); lsSet(lsKey, v);
@@ -483,16 +503,24 @@ export default function AudienceInsightPage() {
     }));
 
   const regionRows  = region ? [...region.rows].filter(r => Number(r.spend) > 0).sort((a, b) => Number(b.spend) - Number(a.spend)) : [];
+
   const mapDef      = metricOf(mapMetric);
   const mapVals     = regionRows.map(r => Number(r[mapMetric])).filter(v => v > 0);
   const minMapVal   = Math.min(...mapVals, 0);
   const maxMapVal   = Math.max(...mapVals, 1);
   const [mapLow, mapHigh] = mapColors(mapDef.polarity);
 
+  const mapDef2     = metricOf(mapMetric2);
+  const mapVals2    = regionRows.map(r => Number(r[mapMetric2])).filter(v => v > 0);
+  const minMapVal2  = Math.min(...mapVals2, 0);
+  const maxMapVal2  = Math.max(...mapVals2, 1);
+  const [mapLow2, mapHigh2] = mapColors(mapDef2.polarity);
+
   const visibleAccounts =
     hiddenAccts.length && hiddenAccts.length < accounts.length
       ? accounts.filter(a => !hiddenAccts.includes(a.id))
       : accounts;
+  const { sorted: rankedAccounts, tagOf, controls: rankControls } = useAccountRanking(visibleAccounts, hiddenAccts);
 
   return (
     <div style={{ padding: "28px 28px", background: "#060a12", minHeight: "100vh" }}>
@@ -503,8 +531,9 @@ export default function AudienceInsightPage() {
           <p style={{ fontSize: 12, color: "#3d4f6a", margin: "2px 0 0 0" }}>แบ่งตามเพศ อายุ และพื้นที่</p>
         </div>
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          {rankControls}
           <select style={SEL} value={account} onChange={e => setAccount(e.target.value)}>
-            {visibleAccounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+            {rankedAccounts.map(a => <option key={a.id} value={a.id}>{a.name}{tagOf(a.id)}</option>)}
           </select>
           <select style={SEL} value={preset} onChange={e => setPreset(e.target.value)}>
             {PRESETS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
@@ -554,46 +583,166 @@ export default function AudienceInsightPage() {
 
           {/* ── Row 3: Thailand heatmap ── */}
           <Card>
-            <CardHeader title="แผนที่ความร้อน — รายจังหวัด" options={ALL_METRICS} metric={mapMetric} onMetric={setAndSave(setMapMetric, "ai.metric.map")} />
-            {region && region.rows.length > 0 ? (
-              <div style={{ display: "grid", gridTemplateColumns: "minmax(320px,1fr) 1fr", gap: 20 }}>
-                <div>
-                  <div style={{ background: "#070c17", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 12, padding: "12px", textAlign: "center" }}>
-                    <ThailandMap rows={region.rows} metricKey={mapMetric} fmt={v => fmtMetric(v, mapDef.fmt)} colors={[mapLow, mapHigh]} />
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "center", marginTop: 10, color: "#3d4f6a", fontSize: 11 }}>
-                      <span>{mapDef.label} {mapDef.polarity === "cost" ? "ต่ำ" : mapDef.polarity === "good" ? "น้อย" : "น้อย"}</span>
-                      <div style={{ width: 128, height: 6, borderRadius: 3, background: `linear-gradient(90deg, ${mapLow}, ${mapHigh})` }} />
-                      <span>{mapDef.label} {mapDef.polarity === "cost" ? "สูง" : "มาก"}</span>
-                    </div>
-                  </div>
-                </div>
-                <div>
-                  <div style={{ fontSize: 11, color: "#3d4f6a", marginBottom: 8 }}>จังหวัดที่ใช้งบสูงสุด</div>
-                  <div style={{ display: "flex", gap: 6, marginBottom: 6, padding: "0 4px" }}>
-                    <div style={{ flex: 1, fontSize: 10, color: "#2a3a50" }}>จังหวัด</div>
-                    <div style={{ width: 60, fontSize: 10, color: "#2a3a50", textAlign: "right" }}>ค่าโฆษณา</div>
-                    <div style={{ width: 70, fontSize: 10, color: "#2a3a50", textAlign: "right" }}>{mapDef.label}</div>
-                  </div>
-                  <AnimatePresence mode="wait">
-                    <motion.div key={mapMetric} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={FADE}>
-                      {regionRows.slice(0, 18).map(r => {
-                        const val = Number(r[mapMetric]);
-                        const t   = maxMapVal > minMapVal ? (val - minMapVal) / (maxMapVal - minMapVal) : 0;
-                        const color = val > 0 ? lerpHex(mapLow, mapHigh, t) : "#3d4f6a";
-                        return (
-                          <motion.div key={String(r.key)} layout style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 4px", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                            <div style={{ flex: 1, fontSize: 11.5, color: "#8a9aba", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{String(r.key)}</div>
-                            <div className="font-mono" style={{ width: 60, fontSize: 11, color: "#c9d1e0", textAlign: "right" }}>{fmtBaht(Number(r.spend))}</div>
-                            <div className="font-mono" style={{ width: 70, fontSize: 11, color, textAlign: "right" }}>
-                              {val > 0 ? <AnimatedNumber value={val} fmt={mapDef.fmt} /> : "—"}
-                            </div>
-                          </motion.div>
-                        );
-                      })}
-                    </motion.div>
-                  </AnimatePresence>
-                </div>
+            {/* Header: title + metric selector (single mode only) + compare toggle */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+              <div style={{ fontSize: 11, color: "#3d4f6a", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                แผนที่ความร้อน — รายจังหวัด
               </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {!mapCompare && (
+                  <MetricSelect options={ALL_METRICS} value={mapMetric} onChange={setAndSave(setMapMetric, "ai.metric.map")} />
+                )}
+                <button
+                  onClick={() => setMapCompare(v => !v)}
+                  style={{
+                    background: mapCompare ? "rgba(91,108,255,0.15)" : "rgba(255,255,255,0.04)",
+                    border: `1px solid ${mapCompare ? "rgba(91,108,255,0.35)" : "rgba(255,255,255,0.08)"}`,
+                    borderRadius: 7, padding: "4px 10px", cursor: "pointer",
+                    color: mapCompare ? "#a0aaff" : "#8a9aba", fontSize: 11.5,
+                    display: "flex", alignItems: "center", gap: 5, transition: "all 0.18s",
+                  }}
+                >
+                  {mapCompare ? (
+                    <>
+                      <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" style={{ width: 11, height: 11 }}>
+                        <path d="M2 2l10 10M12 2L2 12" />
+                      </svg>
+                      ปิดเปรียบเทียบ
+                    </>
+                  ) : (
+                    <>
+                      <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" style={{ width: 11, height: 11 }}>
+                        <path d="M7 1v12M1 7h12" />
+                      </svg>
+                      เปรียบเทียบ
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {region && region.rows.length > 0 ? (
+              <AnimatePresence mode="wait">
+                {mapCompare ? (
+                  /* ── Compare mode: 2 maps side-by-side + province table ── */
+                  <motion.div
+                    key="compare"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={FADE}
+                    style={{ display: "grid", gridTemplateColumns: "1fr 1fr minmax(200px,260px)", gap: 16, alignItems: "start" }}
+                  >
+                    {/* Map A */}
+                    <motion.div initial={{ x: -24, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ ...SPRING, delay: 0.05 }}>
+                      <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
+                        <MetricSelect options={ALL_METRICS} value={mapMetric} onChange={setAndSave(setMapMetric, "ai.metric.map")} />
+                      </div>
+                      <div style={{ background: "#070c17", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 12, padding: "12px", textAlign: "center" }}>
+                        <ThailandMap rows={region.rows} metricKey={mapMetric} fmt={v => fmtMetric(v, mapDef.fmt)} colors={[mapLow, mapHigh]} noDataLabel={`ไม่มีข้อมูล ${mapDef.label} รายจังหวัด`} />
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "center", marginTop: 8, color: "#3d4f6a", fontSize: 10.5 }}>
+                          <span>{mapDef.polarity === "cost" ? "ต่ำ" : "น้อย"}</span>
+                          <div style={{ width: 80, height: 5, borderRadius: 3, background: `linear-gradient(90deg, ${mapLow}, ${mapHigh})` }} />
+                          <span>{mapDef.polarity === "cost" ? "สูง" : "มาก"}</span>
+                        </div>
+                      </div>
+                    </motion.div>
+
+                    {/* Map B */}
+                    <motion.div initial={{ x: 24, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ ...SPRING, delay: 0.05 }}>
+                      <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
+                        <MetricSelect options={ALL_METRICS} value={mapMetric2} onChange={setAndSave(setMapMetric2, "ai.metric.map2")} />
+                      </div>
+                      <div style={{ background: "#070c17", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 12, padding: "12px", textAlign: "center" }}>
+                        <ThailandMap rows={region.rows} metricKey={mapMetric2} fmt={v => fmtMetric(v, mapDef2.fmt)} colors={[mapLow2, mapHigh2]} noDataLabel={`ไม่มีข้อมูล ${mapDef2.label} รายจังหวัด`} />
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "center", marginTop: 8, color: "#3d4f6a", fontSize: 10.5 }}>
+                          <span>{mapDef2.polarity === "cost" ? "ต่ำ" : "น้อย"}</span>
+                          <div style={{ width: 80, height: 5, borderRadius: 3, background: `linear-gradient(90deg, ${mapLow2}, ${mapHigh2})` }} />
+                          <span>{mapDef2.polarity === "cost" ? "สูง" : "มาก"}</span>
+                        </div>
+                      </div>
+                    </motion.div>
+
+                    {/* Province table — both metrics */}
+                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ ...FADE, delay: 0.15 }}>
+                      <div style={{ fontSize: 11, color: "#3d4f6a", marginBottom: 8 }}>จังหวัดที่ใช้งบสูงสุด</div>
+                      <div style={{ display: "flex", gap: 4, marginBottom: 6, padding: "0 4px" }}>
+                        <div style={{ flex: 1, fontSize: 10, color: "#2a3a50" }}>จังหวัด</div>
+                        <div style={{ width: 56, fontSize: 10, color: "#2a3a50", textAlign: "right" }}>{mapDef.label}</div>
+                        <div style={{ width: 56, fontSize: 10, color: "#2a3a50", textAlign: "right" }}>{mapDef2.label}</div>
+                      </div>
+                      <AnimatePresence mode="wait">
+                        <motion.div key={`${mapMetric}-${mapMetric2}`} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={FADE}>
+                          {regionRows.slice(0, 18).map(r => {
+                            const v1  = Number(r[mapMetric]);
+                            const v2  = Number(r[mapMetric2]);
+                            const t1  = maxMapVal > minMapVal ? (v1 - minMapVal) / (maxMapVal - minMapVal) : 0;
+                            const t2  = maxMapVal2 > minMapVal2 ? (v2 - minMapVal2) / (maxMapVal2 - minMapVal2) : 0;
+                            return (
+                              <div key={String(r.key)} style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 4px", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                                <div style={{ flex: 1, fontSize: 11, color: "#8a9aba", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{String(r.key)}</div>
+                                <div className="font-mono" style={{ width: 56, fontSize: 10.5, color: v1 > 0 ? lerpHex(mapLow, mapHigh, t1) : "#3d4f6a", textAlign: "right" }}>
+                                  {v1 > 0 ? <AnimatedNumber value={v1} fmt={mapDef.fmt} /> : "—"}
+                                </div>
+                                <div className="font-mono" style={{ width: 56, fontSize: 10.5, color: v2 > 0 ? lerpHex(mapLow2, mapHigh2, t2) : "#3d4f6a", textAlign: "right" }}>
+                                  {v2 > 0 ? <AnimatedNumber value={v2} fmt={mapDef2.fmt} /> : "—"}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </motion.div>
+                      </AnimatePresence>
+                    </motion.div>
+                  </motion.div>
+                ) : (
+                  /* ── Single mode: original layout ── */
+                  <motion.div
+                    key="single"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={FADE}
+                    style={{ display: "grid", gridTemplateColumns: "minmax(320px,1fr) 1fr", gap: 20 }}
+                  >
+                    <div>
+                      <div style={{ background: "#070c17", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 12, padding: "12px", textAlign: "center" }}>
+                        <ThailandMap rows={region.rows} metricKey={mapMetric} fmt={v => fmtMetric(v, mapDef.fmt)} colors={[mapLow, mapHigh]} noDataLabel={`ไม่มีข้อมูล ${mapDef.label} รายจังหวัด`} />
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "center", marginTop: 10, color: "#3d4f6a", fontSize: 11 }}>
+                          <span>{mapDef.label} {mapDef.polarity === "cost" ? "ต่ำ" : "น้อย"}</span>
+                          <div style={{ width: 128, height: 6, borderRadius: 3, background: `linear-gradient(90deg, ${mapLow}, ${mapHigh})` }} />
+                          <span>{mapDef.label} {mapDef.polarity === "cost" ? "สูง" : "มาก"}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 11, color: "#3d4f6a", marginBottom: 8 }}>จังหวัดที่ใช้งบสูงสุด</div>
+                      <div style={{ display: "flex", gap: 6, marginBottom: 6, padding: "0 4px" }}>
+                        <div style={{ flex: 1, fontSize: 10, color: "#2a3a50" }}>จังหวัด</div>
+                        <div style={{ width: 60, fontSize: 10, color: "#2a3a50", textAlign: "right" }}>ค่าโฆษณา</div>
+                        <div style={{ width: 70, fontSize: 10, color: "#2a3a50", textAlign: "right" }}>{mapDef.label}</div>
+                      </div>
+                      <AnimatePresence mode="wait">
+                        <motion.div key={mapMetric} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={FADE}>
+                          {regionRows.slice(0, 18).map(r => {
+                            const val = Number(r[mapMetric]);
+                            const t   = maxMapVal > minMapVal ? (val - minMapVal) / (maxMapVal - minMapVal) : 0;
+                            const color = val > 0 ? lerpHex(mapLow, mapHigh, t) : "#3d4f6a";
+                            return (
+                              <motion.div key={String(r.key)} layout style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 4px", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                                <div style={{ flex: 1, fontSize: 11.5, color: "#8a9aba", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{String(r.key)}</div>
+                                <div className="font-mono" style={{ width: 60, fontSize: 11, color: "#c9d1e0", textAlign: "right" }}>{fmtBaht(Number(r.spend))}</div>
+                                <div className="font-mono" style={{ width: 70, fontSize: 11, color, textAlign: "right" }}>
+                                  {val > 0 ? <AnimatedNumber value={val} fmt={mapDef.fmt} /> : "—"}
+                                </div>
+                              </motion.div>
+                            );
+                          })}
+                        </motion.div>
+                      </AnimatePresence>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             ) : (
               <div style={{ color: "#3d4f6a", fontSize: 13, padding: "40px 0", textAlign: "center" }}>
                 ไม่มีข้อมูลพื้นที่สำหรับบัญชีหรือช่วงเวลานี้

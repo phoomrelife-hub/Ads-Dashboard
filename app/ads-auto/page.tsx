@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { RuleModal } from "@/components/agents/rule-modal";
 import { RuleHistoryModal } from "@/components/agents/rule-history-modal";
 import type { PublicAgent, Rule } from "@/lib/agents/types";
+import { useAccountRanking } from "@/components/account-ranking";
 
 function scheduleLabel(r: Rule) {
   return r.schedule.kind === "daily" ? `ทุกวัน ${r.schedule.time}` : `ทุก ${r.schedule.everyMinutes}นาที`;
@@ -51,6 +52,7 @@ export default function AdsAutoPage() {
   const visibleAccts = hiddenAccts.length && hiddenAccts.length < accounts.length
     ? accounts.filter((a) => !hiddenAccts.includes(a.id))
     : accounts;
+  const { sorted: rankedAccts, tagOf, controls: rankControls } = useAccountRanking(visibleAccts, hiddenAccts);
 
   const agentMap = new Map(agents.map((a) => [a.id, a]));
   const accName = (id: string) => (id === "all" ? "ทุกบัญชี" : accounts.find((a) => a.id === id)?.name || id);
@@ -90,10 +92,11 @@ export default function AdsAutoPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {rankControls}
           <select value={filterAccount} onChange={(e) => setFilterAccount(e.target.value)}
             style={{ background: "#0a0e1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "7px 10px", color: "#c8d0e0", fontSize: 12, outline: "none" }}>
             <option value="all">ทุกบัญชี</option>
-            {visibleAccts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            {rankedAccts.map((a) => <option key={a.id} value={a.id}>{a.name}{tagOf(a.id)}</option>)}
           </select>
           <button onClick={() => { setEditRule(null); setModalOpen(true); }}
             className="px-3.5 py-2 rounded-lg text-[12.5px] font-semibold"

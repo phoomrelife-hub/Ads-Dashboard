@@ -48,10 +48,19 @@ function rowToEvent(row: Record<string, unknown>): LeadEvent {
 
 // ── Queries ───────────────────────────────────────────────────────────────────
 
+// Default page size. Bounds the result set so the inbox never pulls an unbounded
+// number of rows (PostgREST would otherwise silently cap and you'd never know).
+// 1000 matches PostgREST's historical default, so this is not a behavior change —
+// it just makes the bound explicit and overridable via opts.limit.
+const LEADS_PAGE_DEFAULT = 1000;
+
 export async function listLeads(
   accountId: string,
-  opts?: { status?: LeadStatus | 'all'; search?: string },
+  opts?: { status?: LeadStatus | 'all'; search?: string; limit?: number; offset?: number },
 ): Promise<Lead[]> {
+  const limit = Math.max(1, Math.min(opts?.limit ?? LEADS_PAGE_DEFAULT, 1000));
+  const offset = Math.max(0, opts?.offset ?? 0);
+
   let q = supabase
     .from('leads')
     .select('*')
@@ -65,6 +74,9 @@ export async function listLeads(
     const s = opts.search.trim();
     q = q.or(`phone.ilike.%${s}%,name.ilike.%${s}%`);
   }
+
+  // range() is inclusive on both ends → [offset, offset + limit - 1].
+  q = q.range(offset, offset + limit - 1);
 
   const { data, error } = await q;
   if (error) throw new Error(error.message);
@@ -271,6 +283,21 @@ export interface UpsertFromFbInput {
  * Never overwrites a lead that telesales has worked (contacted/won/lost).
  * A repeat submission on a closed lead always creates a new row (repeat buyer visible).
  */
+/**
+ * Bulk existence check: which of these fbLeadIds are already in the DB.
+ * Lets the ingest loop skip the (overwhelmingly common) "already seen" leads in a
+ * single query instead of 2 SELECTs per lead — collapses the steady-state N+1.
+ */
+export async function existingFbLeadIds(fbLeadIds: string[]): Promise<Set<string>> {
+  if (fbLeadIds.length === 0) return new Set();
+  const { data, error } = await supabase
+    .from('leads')
+    .select('fb_lead_id')
+    .in('fb_lead_id', fbLeadIds);
+  if (error) throw new Error(error.message);
+  return new Set((data ?? []).map((r) => (r as { fb_lead_id: string }).fb_lead_id));
+}
+
 export async function upsertFromFb(
   input: UpsertFromFbInput,
 ): Promise<{ created: boolean }> {

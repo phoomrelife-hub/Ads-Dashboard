@@ -13,8 +13,8 @@ function lerp(a: string, b: string, t: number) {
 }
 
 export function ThailandMap({
-  rows, metricKey, fmt, colors = ["#26303d", "#ff3b3b"],
-}: { rows: Record<string, any>[]; metricKey: string; fmt: (v: number) => string; colors?: [string, string] }) {
+  rows, metricKey, fmt, colors = ["#26303d", "#ff3b3b"], noDataLabel,
+}: { rows: Record<string, any>[]; metricKey: string; fmt: (v: number) => string; colors?: [string, string]; noDataLabel?: string }) {
   const [geo, setGeo] = useState<Geo | null>(GEO_CACHE);
 
   useEffect(() => {
@@ -43,6 +43,31 @@ export function ThailandMap({
   const vals: Record<string, number> = {};
   let max = 0;
   for (const r of rows) { const k = norm(String(r.key)); vals[k] = (vals[k] || 0) + (Number(r[metricKey]) || 0); if (vals[k] > max) max = vals[k]; }
+
+  // No data for this metric — render flat map with overlay instead of all-dark provinces
+  if (max === 0) {
+    return (
+      <div style={{ position: "relative" }}>
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto max-h-[560px]" style={{ opacity: 0.25 }} xmlns="http://www.w3.org/2000/svg">
+          {geo.features.map((f, i) => (
+            <path key={i} d={pathOf(f.geometry)} fill="#1a2535" stroke="#0a0e14" strokeWidth={0.4} />
+          ))}
+        </svg>
+        <div style={{
+          position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+          alignItems: "center", justifyContent: "center", gap: 6,
+        }}>
+          <svg viewBox="0 0 20 20" fill="none" stroke="#3d4f6a" strokeWidth="1.5" strokeLinecap="round" style={{ width: 28, height: 28 }}>
+            <circle cx="10" cy="10" r="8" /><path d="M10 6v4M10 14h.01" />
+          </svg>
+          <div style={{ fontSize: 12, color: "#4a5a7a", fontWeight: 600 }}>
+            {noDataLabel ?? "ไม่มีข้อมูลรายจังหวัด"}
+          </div>
+          <div style={{ fontSize: 11, color: "#2a3a50" }}>Facebook ไม่รายงาน metric นี้แบบแยกจังหวัด</div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto max-h-[560px]" xmlns="http://www.w3.org/2000/svg">

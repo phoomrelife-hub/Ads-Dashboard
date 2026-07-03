@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getBreakdown, getAccounts, getAdDaily } from "@/lib/fb";
+import { supabase } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
 
@@ -38,8 +39,22 @@ export async function GET(req: NextRequest) {
     // sum raw metrics per date across all accounts
     const byDate = new Map<string, DayAcc>();
     if (pageSet) {
+      // Narrow which accounts to query by looking up page→account in Supabase cache.
+      // Avoids calling getAdDaily on every account when only 2-5 actually run these pages.
+      let actsToQuery = acts;
+      if (acts.length > 1) {
+        const { data: pageRows } = await supabase
+          .from("fb_pages")
+          .select("account_id")
+          .in("id", [...pageSet]);
+        if (pageRows && pageRows.length > 0) {
+          const relevant = new Set(pageRows.map((r: { account_id: string }) => r.account_id));
+          actsToQuery = acts.filter(id => relevant.has(id));
+          if (!actsToQuery.length) actsToQuery = acts; // cache miss fallback
+        }
+      }
       // ad-level: keep only ads belonging to the selected page(s), then aggregate by day
-      const perAct = await Promise.all(acts.map((id) => getAdDaily(id, preset, since, until).catch(() => [])));
+      const perAct = await Promise.all(actsToQuery.map((id) => getAdDaily(id, preset, since, until).catch(() => [])));
       for (const rows of perAct)
         for (const r of rows)
           if (pageSet.has(r.pageId))

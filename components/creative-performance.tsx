@@ -5,6 +5,7 @@ import Flatpickr from "react-flatpickr";
 import "flatpickr/dist/flatpickr.min.css";
 import { baht, num, dec } from "@/lib/columns";
 import type { CreativePoint } from "@/lib/fb";
+import { useAccountRanking } from "@/components/account-ranking";
 
 type Acct = { id: string; name: string; active: boolean };
 
@@ -155,7 +156,8 @@ export function CreativePerformance() {
   }, [points, statusFilter, roasMin, roasMax]);
 
   const visibleAccts = hiddenAccts.length === accounts.length ? accounts : accounts.filter(a => !hiddenAccts.includes(a.id));
-  const filteredAccts = visibleAccts.filter(a => a.name.toLowerCase().includes(acctQuery.toLowerCase()));
+  const { sorted: rankedAccts, tagOf, controls: rankControls } = useAccountRanking(visibleAccts, hiddenAccts);
+  const filteredAccts = rankedAccts.filter(a => a.name.toLowerCase().includes(acctQuery.toLowerCase()));
   const yInfo = Y_OPTS.find(o => o.k === yMetric)!;
   const xInfo = X_OPTS.find(o => o.k === xMetric)!;
 
@@ -257,6 +259,10 @@ export function CreativePerformance() {
                     <input value={acctQuery} onChange={e => setAcctQuery(e.target.value)} placeholder="ค้นหา..."
                       className="w-full bg-transparent text-[12px] outline-none text-[#c9d1e0] placeholder:text-[#2a3a50]" autoFocus />
                   </div>
+                  {/* rank-by controls — reorder accounts by 7-day performance */}
+                  <div className="flex items-center gap-1.5 px-2 py-2 flex-wrap border-b border-white/[0.06]">
+                    {rankControls}
+                  </div>
                   {/* Overall option */}
                   <div onClick={() => { setAcctId("all"); setAcctName("ภาพรวม"); setAcctOpen(false); }}
                     className="px-3 py-2 cursor-pointer text-[12px] truncate transition-colors flex items-center gap-1.5"
@@ -267,11 +273,12 @@ export function CreativePerformance() {
                   </div>
                   {filteredAccts.length ? filteredAccts.map(a => (
                     <div key={a.id} onClick={() => { setAcctId(a.id); setAcctName(a.name); setAcctOpen(false); }}
-                      className="px-3 py-2 cursor-pointer text-[12px] truncate transition-colors"
+                      className="px-3 py-2 cursor-pointer text-[12px] transition-colors flex items-center gap-2"
                       style={{ color: a.id === acctId ? "#fff" : "#8a9aba", background: a.id === acctId ? "#2d88ff" : "transparent" }}
                       onMouseEnter={e => { if (a.id !== acctId) e.currentTarget.style.background = "rgba(45,136,255,0.1)"; }}
                       onMouseLeave={e => { if (a.id !== acctId) e.currentTarget.style.background = "transparent"; }}>
-                      {a.name}
+                      <span className="truncate">{a.name}</span>
+                      <span className="ml-auto text-[10px] flex-shrink-0 font-mono opacity-70">{tagOf(a.id).replace(/^ · /, "")}</span>
                     </div>
                   )) : <div className="px-3 py-2 text-[#2a3a50] text-[12px]">ไม่พบบัญชี</div>}
                 </motion.div>

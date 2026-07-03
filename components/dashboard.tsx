@@ -9,6 +9,7 @@ const Flatpickr = dynamic(() => import("react-flatpickr"), { ssr: false });
 import { ThailandMap } from "@/components/thailand-map";
 import { COLS, COL_GROUPS, DEFAULT_VIS, fmtVal, footVal, baht, num, type Col } from "@/lib/columns";
 import { scoreAd, type Criterion, type Direction, type Score } from "@/lib/scoring";
+import { useAccountRanking } from "@/components/account-ranking";
 
 type Row = Record<string, any>;
 type Acct = { id: string; name: string; active: boolean };
@@ -343,7 +344,8 @@ export function Dashboard({ initialAccounts = [] }: { initialAccounts?: Acct[] }
   const visibleAccts = hiddenAccts.length === accounts.length
     ? accounts
     : accounts.filter((a) => !hiddenAccts.includes(a.id));
-  const filteredAccts = visibleAccts.filter((a) => a.name.toLowerCase().includes(acctQuery.toLowerCase()));
+  const { sorted: rankedAccts, tagOf, controls: rankControls } = useAccountRanking(visibleAccts, hiddenAccts);
+  const filteredAccts = rankedAccts.filter((a) => a.name.toLowerCase().includes(acctQuery.toLowerCase()));
 
   /* ── Input / control shared styles ── */
   const inputCls = "bg-[#0c1220] border border-white/[0.08] rounded-xl px-3 py-2 text-[13px] outline-none transition-colors focus:border-[#2d88ff]/60 hover:border-white/[0.14] placeholder:text-[#3d4f6a] text-[#c9d1e0]";
@@ -379,6 +381,11 @@ export function Dashboard({ initialAccounts = [] }: { initialAccounts?: Acct[] }
                   transition={{ duration: 0.14, ease: "easeOut" }}
                   className="absolute top-[calc(100%+6px)] left-0 right-0 max-h-72 overflow-y-auto rounded-xl z-40 shadow-[0_16px_48px_rgba(0,0,0,0.7)]"
                   style={{ background: "#0c1220", border: "1px solid rgba(255,255,255,0.08)" }}>
+                  {/* rank-by controls — reorder accounts by 7-day performance */}
+                  <div className="flex items-center gap-1.5 px-2.5 py-2 sticky top-0 z-10" style={{ background: "#0c1220", borderBottom: "1px solid rgba(255,255,255,0.08)" }}
+                    onClick={(e) => e.stopPropagation()}>
+                    {rankControls}
+                  </div>
                   {/* All accounts (merged) */}
                   {(!acctQuery || "บัญชีทั้งหมด all".toLowerCase().includes(acctQuery.toLowerCase())) && (
                     <div onClick={() => { setAcctId("all"); setAcctName("บัญชีทั้งหมด"); setAcctOpen(false); }}
@@ -400,7 +407,10 @@ export function Dashboard({ initialAccounts = [] }: { initialAccounts?: Acct[] }
                       style={{ color: a.id === acctId ? "#fff" : "#8a9aba", background: a.id === acctId ? "#2d88ff" : "transparent" }}
                       onMouseEnter={e => { if (a.id !== acctId) { e.currentTarget.style.background = "rgba(45,136,255,0.1)"; e.currentTarget.style.color = "#c9d1e0"; } }}
                       onMouseLeave={e => { if (a.id !== acctId) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "#8a9aba"; } }}>
-                      {a.name}
+                      <div className="flex items-center gap-2">
+                        <span className="truncate">{a.name}</span>
+                        <span className="ml-auto text-[10px] flex-shrink-0 font-mono opacity-70">{tagOf(a.id).replace(/^ · /, "")}</span>
+                      </div>
                     </div>
                   )) : <div className="px-3.5 py-2.5 text-[#3d4f6a] text-[13px]">ไม่พบบัญชี</div>}
                 </motion.div>
