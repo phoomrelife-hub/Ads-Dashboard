@@ -57,7 +57,8 @@ export type LogKind = "task" | "response" | "proposal" | "action" | "error" | "r
 
 // ── Automation rules (cron) ──────────────────────────────────────────────────
 export type RuleMetric =
-  | "roas" | "spend" | "cpl" | "cpc" | "ctr" | "leads" | "purchases" | "messaging" | "frequency" | "cpm";
+  | "roas" | "spend" | "cpl" | "cpc" | "ctr" | "leads" | "purchases" | "messaging" | "frequency" | "cpm"
+  | "true_roas" | "true_cac" | "real_cvr";
 export type RuleOp = ">" | ">=" | "<" | "<=" | "==";
 export type RuleActionType = "pause" | "activate" | "set_budget";
 export type RuleLevel = "campaign" | "adset" | "ad";
@@ -193,7 +194,7 @@ export interface ChatResponse {
 // Deterministic morning digest: ranked, evidence-backed items needing attention,
 // each carrying an optional one-click action. No LLM — numbers are never invented.
 
-export type BriefingKind = "wasting" | "declining" | "underperforming" | "fatigue" | "scaling";
+export type BriefingKind = "wasting" | "declining" | "underperforming" | "fatigue" | "scaling" | "real_loser" | "hidden_winner";
 export type BriefingSeverity = "critical" | "warning" | "opportunity" | "info";
 
 /** One number shown on a briefing card (delta is % change vs previous period). */

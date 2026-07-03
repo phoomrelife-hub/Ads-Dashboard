@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import type { Briefing, BriefingItem, BriefingSeverity } from "@/lib/agents/types";
+import { useAccountRanking } from "@/components/account-ranking";
 
 interface Account { id: string; name: string; active?: boolean }
 
@@ -14,6 +15,7 @@ const SEV: Record<BriefingSeverity, { bar: string; chip: string; label: string }
 const KIND_LABEL: Record<string, string> = {
   wasting: "ใช้งบฟุ่มเฟือย", declining: "ตกต่ำ", underperforming: "ต่ำกว่าเกณฑ์",
   fatigue: "โฆษณาเสื่อมสภาพ", scaling: "ขยายงบที่ดี",
+  real_loser: "ผลลัพธ์จริงแย่", hidden_winner: "ดาวเด่นที่ซ่อนอยู่",
 };
 const PRESETS: [string, string][] = [
   ["today", "วันนี้"], ["yesterday", "เมื่อวาน"], ["last_7d", "7 วันล่าสุด"],
@@ -89,6 +91,9 @@ export function DailyBriefing() {
 
   const s = data?.summary;
 
+  const visibleAccounts = hiddenAccts.length === accounts.length ? accounts : accounts.filter((a) => !hiddenAccts.includes(a.id));
+  const { sorted: sortedAccounts, tagOf, controls: rankControls, loading: statsLoading } = useAccountRanking(visibleAccounts, hiddenAccts);
+
   return (
     <div className="min-h-screen" style={{ background: "#050810" }}>
       {/* header */}
@@ -98,10 +103,11 @@ export function DailyBriefing() {
           <div className="text-[12.5px] text-[#3a4a6a]">สิ่งที่ต้องดูแลวันนี้ — เรียงตามความสำคัญ พร้อมแก้ไขด้วยคลิกเดียว</div>
         </div>
         <div className="flex items-center gap-2">
+          {rankControls}
           <select value={account} onChange={(e) => setAccount(e.target.value)} style={selStyle}>
-            {(hiddenAccts.length === accounts.length ? accounts : accounts.filter((a) => !hiddenAccts.includes(a.id)))
-              .map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            {sortedAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}{tagOf(a.id)}</option>)}
           </select>
+          {statsLoading && <span className="text-[11px] text-[#3a4a6a] whitespace-nowrap">กำลังโหลดสถิติ…</span>}
           <select value={preset} onChange={(e) => setPreset(e.target.value)} style={selStyle}>
             {PRESETS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
           </select>

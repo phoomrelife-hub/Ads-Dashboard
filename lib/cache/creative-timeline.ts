@@ -15,7 +15,7 @@ export async function getCachedTimeline(
     .eq('preset', preset)
     .eq('since', since ?? '')
     .eq('until', until ?? '')
-    .single()
+    .maybeSingle() // 0 rows → null data without surfacing a PostgREST error
   if (!data) return null
   return {
     points: data.data as any[],
@@ -30,18 +30,23 @@ export async function setCachedTimeline(
   until: string | undefined,
   points: any[],
 ) {
-  await supabase
-    .from('creative_timeline_cache')
-    .upsert(
-      {
-        account_id: accountId,
-        preset,
-        since: since ?? '',
-        until: until ?? '',
-        data: points,
-        cached_at: new Date().toISOString(),
-      },
-      { onConflict: 'account_id,preset,since,until' },
-    )
-    .catch(() => {})
+  // Best-effort cache write; never let a cache failure break the request path.
+  // (The PostgREST builder is a thenable but has no .catch method — use try/catch.)
+  try {
+    await supabase
+      .from('creative_timeline_cache')
+      .upsert(
+        {
+          account_id: accountId,
+          preset,
+          since: since ?? '',
+          until: until ?? '',
+          data: points,
+          cached_at: new Date().toISOString(),
+        },
+        { onConflict: 'account_id,preset,since,until' },
+      )
+  } catch {
+    /* ignore cache write errors */
+  }
 }

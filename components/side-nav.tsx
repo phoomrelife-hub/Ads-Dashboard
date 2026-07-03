@@ -1,7 +1,8 @@
 "use client";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
+import { prefetchRoute } from "@/lib/prefetch-client";
 
 const NAV_ITEMS = [
   {
@@ -26,9 +27,16 @@ const NAV_ITEMS = [
   },
 ];
 
-export function SideNav({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+export function SideNav({ collapsed, onToggle, firstActId = "" }: { collapsed: boolean; onToggle: () => void; firstActId?: string }) {
   const pathname = usePathname();
+  const router = useRouter();
   const w = collapsed ? 60 : 224;
+
+  async function logout() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    router.replace("/login");
+    router.refresh();
+  }
 
   return (
     <motion.nav
@@ -77,7 +85,7 @@ export function SideNav({ collapsed, onToggle }: { collapsed: boolean; onToggle:
             {group.items.map(item => {
               const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
               return (
-                <NavItem key={item.href} {...item} active={active} collapsed={collapsed} />
+                <NavItem key={item.href} {...item} active={active} collapsed={collapsed} firstActId={firstActId} />
               );
             })}
           </div>
@@ -87,6 +95,19 @@ export function SideNav({ collapsed, onToggle }: { collapsed: boolean; onToggle:
       {/* collapse toggle */}
       <div className="flex-shrink-0 px-2 pb-4">
         <div style={{ borderTop: "1px solid rgba(255,255,255,0.05)", paddingTop: 12 }}>
+          <button onClick={logout}
+            className="w-full flex items-center gap-3 px-2.5 py-2 rounded-lg transition-colors cursor-pointer group mb-1"
+            style={{ color: "#3a4a6a" }}
+            onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.04)")}
+            onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
+            <div className="flex-shrink-0 w-4 h-4"><IconLogout /></div>
+            <AnimatePresence>
+              {!collapsed && (
+                <motion.span initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                  className="text-[12px] whitespace-nowrap">ออกจากระบบ</motion.span>
+              )}
+            </AnimatePresence>
+          </button>
           <button onClick={onToggle}
             className="w-full flex items-center gap-3 px-2.5 py-2 rounded-lg transition-colors cursor-pointer group"
             style={{ color: "#3a4a6a" }}
@@ -108,8 +129,8 @@ export function SideNav({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   );
 }
 
-function NavItem({ href, label, icon: Icon, color, active, collapsed }: {
-  href: string; label: string; icon: React.FC; color: string; active: boolean; collapsed: boolean;
+function NavItem({ href, label, icon: Icon, color, active, collapsed, firstActId }: {
+  href: string; label: string; icon: React.FC; color: string; active: boolean; collapsed: boolean; firstActId: string;
 }) {
   return (
     <Link href={href} className="block mb-0.5">
@@ -118,7 +139,11 @@ function NavItem({ href, label, icon: Icon, color, active, collapsed }: {
           background: active ? `${color}12` : "transparent",
           color: active ? color : "#4a5a7a",
         }}
-        onMouseEnter={e => { if (!active) e.currentTarget.style.background = "rgba(255,255,255,0.04)"; e.currentTarget.style.color = active ? color : "#8a9aba"; }}
+        onMouseEnter={e => {
+          if (!active) e.currentTarget.style.background = "rgba(255,255,255,0.04)";
+          e.currentTarget.style.color = active ? color : "#8a9aba";
+          if (!active && firstActId) prefetchRoute(href, firstActId);
+        }}
         onMouseLeave={e => { e.currentTarget.style.background = active ? `${color}12` : "transparent"; e.currentTarget.style.color = active ? color : "#4a5a7a"; }}>
 
         {/* active left bar */}
@@ -216,6 +241,11 @@ function IconUsers() {
     <circle cx="6" cy="5" r="2.5" />
     <path d="M1 13c0-2.5 2-4 5-4s5 1.5 5 4" />
     <path d="M11 2.5a2.5 2.5 0 0 1 0 5M15 13c0-2.2-1.5-3.5-4-3.8" />
+  </svg>;
+}
+function IconLogout() {
+  return <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4">
+    <path d="M6 14H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h3" /><path d="M11 11l3-3-3-3" /><path d="M14 8H6" />
   </svg>;
 }
 function IconChevron() {

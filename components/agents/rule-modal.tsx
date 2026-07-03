@@ -7,6 +7,7 @@ const METRICS: [RuleMetric, string][] = [
   ["roas", "ROAS"], ["spend", "ค่าโฆษณา (฿)"], ["cpl", "ต้นทุน / ลีด"], ["cpc", "CPC"],
   ["ctr", "CTR %"], ["leads", "ลีด"], ["purchases", "ยอดซื้อ"], ["messaging", "ข้อความ"],
   ["frequency", "ความถี่"], ["cpm", "CPM"],
+  ["true_roas", "TRUE ROAS (จริง)"], ["true_cac", "TRUE CAC (ต้นทุน/ลูกค้าจริง)"], ["real_cvr", "CVR จริง (%)"],
 ];
 const OPS: RuleOp[] = [">", ">=", "<", "<=", "=="];
 const LEVELS: [RuleLevel, string][] = [["ad", "โฆษณา"], ["adset", "ชุดโฆษณา"], ["campaign", "แคมเปญ"]];

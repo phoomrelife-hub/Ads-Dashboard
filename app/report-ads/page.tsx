@@ -1,6 +1,7 @@
 "use client";
 import React, { useState, useRef, useMemo, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useAccountRanking } from "@/components/account-ranking";
 
 // ─── Types ────────────────────────────────────────────────────
 type Acct = { id: string; name: string; active: boolean };
@@ -497,6 +498,8 @@ type AcctBreakRow = {
   roas: number; cpi: number; costPerOrder: number;
 };
 
+const acctBreakCache = new Map<string, AcctBreakRow[]>();
+
 function AccountBreakdown({ period, dateRange, brandPageIds }: {
   period: PK; dateRange: { since: string; until: string } | null; brandPageIds: string;
 }) {
@@ -506,18 +509,35 @@ function AccountBreakdown({ period, dateRange, brandPageIds }: {
 
   useEffect(() => {
     let alive = true;
-    setLoading(true);
-    setErr(null);
     const brandQ = brandPageIds ? `&pages=${brandPageIds}` : "";
     const url = dateRange
       ? `/api/account-breakdown?preset=custom&since=${dateRange.since}&until=${dateRange.until}${brandQ}`
       : `/api/account-breakdown?preset=${period}${brandQ}`;
+
+    // Serve from cache instantly, revalidate in background
+    const cached = acctBreakCache.get(url);
+    if (cached) {
+      setRows(cached);
+      setLoading(false);
+      fetch(url).then(r => r.json()).then(j => {
+        if (!alive || j.error) return;
+        const fresh = (j.rows as AcctBreakRow[]).filter(r => r.spend > 0);
+        acctBreakCache.set(url, fresh);
+        setRows(fresh);
+      }).catch(() => {});
+      return;
+    }
+
+    setLoading(true);
+    setErr(null);
     fetch(url)
       .then(r => r.json())
       .then(j => {
         if (!alive) return;
         if (j.error) throw new Error(j.error);
-        setRows((j.rows as AcctBreakRow[]).filter(r => r.spend > 0));
+        const fresh = (j.rows as AcctBreakRow[]).filter(r => r.spend > 0);
+        acctBreakCache.set(url, fresh);
+        setRows(fresh);
       })
       .catch(e => { if (alive) setErr(e.message || "โหลดข้อมูลไม่สำเร็จ"); })
       .finally(() => { if (alive) setLoading(false); });
@@ -676,6 +696,7 @@ export default function ReportAdsPage() {
   const [acctOpen, setAcctOpen] = useState(false);
   const [calOpen, setCalOpen] = useState(false);
   const [brandFilter, setBrandFilter] = useState(""); // "" = all brands
+  const reportCache = useRef<Map<string, ReportData>>(new Map());
   const [selectedCards, setSelectedCards] = useState<Set<string>>(
     new Set(["spend", "roas", "orders", "revenue"])
   );
@@ -714,16 +735,29 @@ export default function ReportAdsPage() {
 
   const fetchData = useCallback(async () => {
     if (!act) return;
+    const brandQ = brandPageIds ? `&pages=${brandPageIds}` : "";
+    const url = dateRange
+      ? `/api/report-ads?act=${act}&preset=custom&since=${dateRange.since}&until=${dateRange.until}${brandQ}`
+      : `/api/report-ads?act=${act}&preset=${period}${brandQ}`;
+
+    // Serve previous result instantly, revalidate in background
+    const cached = reportCache.current.get(url);
+    if (cached) {
+      setData(cached);
+      setLoading(false);
+      fetch(url).then(r => r.json()).then(json => {
+        if (!json.error) { reportCache.current.set(url, json); setData(json); }
+      }).catch(() => {});
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
-      const brandQ = brandPageIds ? `&pages=${brandPageIds}` : "";
-      const url = dateRange
-        ? `/api/report-ads?act=${act}&preset=custom&since=${dateRange.since}&until=${dateRange.until}${brandQ}`
-        : `/api/report-ads?act=${act}&preset=${period}${brandQ}`;
       const res = await fetch(url);
       const json = await res.json();
       if (json.error) throw new Error(json.error);
+      reportCache.current.set(url, json);
       setData(json);
     } catch (e: any) {
       setError(e.message || "โหลดข้อมูลไม่สำเร็จ");
@@ -736,6 +770,7 @@ export default function ReportAdsPage() {
 
   const acctName = act === "all" ? "ทุกบัญชี" : (accounts.find(a => a.id === act)?.name || act);
   const visibleAccts = hiddenAccts.length === accounts.length ? accounts : accounts.filter(a => !hiddenAccts.includes(a.id));
+  const { sorted: rankedAccts, tagOf, controls: rankControls } = useAccountRanking(visibleAccts, hiddenAccts);
 
   return (
     <div className="min-h-screen p-6" style={{ background: "#060a12" }}
@@ -779,6 +814,10 @@ export default function ReportAdsPage() {
                   }}
                   onClick={e => e.stopPropagation()}
                 >
+                  {/* rank-by controls — reorder accounts by 7-day performance */}
+                  <div className="flex items-center gap-1.5 px-2.5 py-2" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                    {rankControls}
+                  </div>
                   {/* All accounts (merged) */}
                   <button
                     onClick={() => { setAct("all"); setAcctOpen(false); }}
@@ -800,7 +839,7 @@ export default function ReportAdsPage() {
                     <span className="truncate">ทุกบัญชี</span>
                     <span className="ml-auto text-[10px]" style={{ color: act === "all" ? "#2d88ff" : "#3a4a6a" }}>{visibleAccts.length} บัญชี</span>
                   </button>
-                  {visibleAccts.map(a => (
+                  {rankedAccts.map(a => (
                     <button key={a.id}
                       onClick={() => { setAct(a.id); setAcctOpen(false); }}
                       className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[12px] transition-colors cursor-pointer"
@@ -815,6 +854,7 @@ export default function ReportAdsPage() {
                       <div className="w-1.5 h-1.5 rounded-full flex-shrink-0"
                         style={{ background: a.active ? "#31c48d" : "#3a4a6a" }} />
                       <span className="truncate">{a.name}</span>
+                      <span className="ml-auto text-[10px] text-[#3a4a6a] flex-shrink-0 font-mono">{tagOf(a.id).replace(/^ · /, "")}</span>
                     </button>
                   ))}
                 </motion.div>

@@ -534,6 +534,32 @@ export async function getLevelAll(level: Level, preset: string, since?: string, 
   return { rows, totals, problems };
 }
 
+// Per-account aggregate totals for the period — one account-level insights call each (no metadata,
+// no ad crawl), concurrency-capped against rate limits. Powers the account-selector ranking so the
+// user can sort accounts by ROAS / spend / CPL / leads and surface the ones needing attention.
+// Per-account failures carry an `error` string instead of crashing the whole list.
+export interface AccountStat {
+  id: string; name: string; active?: boolean;
+  spend: number; revenue: number; roas: number; cpl: number;
+  leads: number; purchases: number; messaging: number;
+  error?: string;
+}
+export async function getAccountsStats(preset: string, since?: string, until?: string, hidden: string[] = []): Promise<AccountStat[]> {
+  const accts = visibleAccounts(await getAccounts(), hidden);
+  return mapPool(accts, 3, async (a: { id: string; name: string; active?: boolean }) => {
+    const base = { id: a.id, name: a.name, active: a.active };
+    try {
+      const u = new URL(`${API}/${a.id}/insights`);
+      u.search = authParams({ ...timeParams(preset, since, until), limit: "1", fields: `${BASE_FIELDS},${ACTION_FIELDS}` }).toString();
+      const data = await pageAll(u.toString());
+      const m = metrics(data[0] || {});
+      return { ...base, spend: m.spend, revenue: m.revenue, roas: m.roas, cpl: m.cpl, leads: m.leads, purchases: m.purchases, messaging: m.messaging };
+    } catch (e: any) {
+      return { ...base, spend: 0, revenue: 0, roas: 0, cpl: 0, leads: 0, purchases: 0, messaging: 0, error: classifyFbError(e?.message || String(e)) };
+    }
+  });
+}
+
 export async function getBreakdown(act: string, preset: string, dim: Dim, since?: string, until?: string): Promise<Result> {
   const isPlacement = dim === "platform_position";
   const fields = isPlacement ? PURE_FIELDS : `${BASE_FIELDS},${ACTION_FIELDS}`;
@@ -777,6 +803,122 @@ export async function getAccounts() {
     if (cached) return cached;
     throw e;
   }
+}
+
+// ─── Lead form ingestion ─────────────────────────────────────────────────────
+//
+// NOTE: Fetching the /leads edge requires the `leads_retrieval` permission on the
+// FB access token AND the page must have accepted the leads ToS in Meta Business Suite.
+// Without it every ad's /leads request will return a permission error, which is caught
+// below so the rest of the app (manual-add, rules, etc.) keeps working.
+
+export interface FbLead {
+  fbLeadId: string;
+  phone: string;
+  name?: string;
+  campaignId?: string;
+  adsetId?: string;
+  adId?: string;
+  campaignName?: string;
+  adName?: string;
+  createdTime: string;
+}
+
+// field_data entry names that carry the phone number (FB lead forms are multilingual)
+const PHONE_FIELD_NAMES = new Set(['phone_number', 'phone', 'เบอร์โทร', 'เบอร์โทรศัพท์']);
+// field_data entry names that carry the full name
+const NAME_FIELD_NAMES = new Set(['full_name', 'first_name', 'name', 'ชื่อ-นามสกุล', 'ชื่อ']);
+
+/**
+ * Fetch new leads from Facebook Lead Ads for an ad account.
+ *
+ * Strategy:
+ *  1. List all ads in the account (with campaign/adset metadata embedded).
+ *  2. For each ad, query the /leads edge filtered by `time_created > sinceUnix`.
+ *  3. Parse field_data to extract phone + name.
+ *  4. Leads with no phone are skipped (phone is the attribution join key).
+ *
+ * Errors on individual ads (most likely a missing `leads_retrieval` permission) are
+ * caught and warned rather than thrown — the function always returns what it can.
+ * A top-level failure (e.g. can't list ads at all) returns [] with a warning.
+ */
+export async function getNewLeads(act: string, sinceUnix?: number): Promise<FbLead[]> {
+  let ads: any[];
+  try {
+    const adUrl = new URL(`${API}/${act}/ads`);
+    adUrl.search = authParams({
+      fields: 'id,name,campaign{id,name},adset{id}',
+      limit: '200',
+    }).toString();
+    ads = await pageRaw(adUrl.toString(), 20);
+  } catch (e: any) {
+    console.warn(`[getNewLeads] Cannot list ads for ${act} — skipping lead ingestion for this account:`, e?.message);
+    return [];
+  }
+
+  const results: FbLead[] = [];
+
+  for (const ad of ads) {
+    const leadsParams: Record<string, string> = {
+      fields: 'id,created_time,field_data,campaign_id,adset_id,ad_id',
+      limit: '200',
+    };
+    if (sinceUnix != null) {
+      leadsParams.filtering = JSON.stringify([
+        { field: 'time_created', operator: 'GREATER_THAN', value: sinceUnix },
+      ]);
+    }
+
+    let adLeads: any[];
+    try {
+      const leadsUrl = new URL(`${API}/${ad.id}/leads`);
+      leadsUrl.search = authParams(leadsParams).toString();
+      adLeads = await pageRaw(leadsUrl.toString(), 20);
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      // A permission error (missing leads_retrieval / pages_manage_ads) is token-wide,
+      // not ad-specific — every remaining ad would fail identically. Warn ONCE for the
+      // account and stop, instead of spamming one line per ad each tick. Manual
+      // add-lead is unaffected.
+      if (/leads_retrieval|pages_manage_ads|permission/i.test(msg)) {
+        console.warn(`[getNewLeads] ${act}: auto-ingestion off — FB token is missing the 'leads_retrieval' permission. Manual add-lead still works.`);
+        return results;
+      }
+      console.warn(`[getNewLeads] Cannot fetch leads for ad ${ad.id}:`, msg);
+      continue;
+    }
+
+    for (const lead of adLeads) {
+      const fieldData: Array<{ name: string; values: string[] }> = lead.field_data ?? [];
+      let phone = '';
+      let name: string | undefined;
+
+      for (const f of fieldData) {
+        if (PHONE_FIELD_NAMES.has(f.name) && !phone) {
+          phone = (f.values?.[0] ?? '').trim();
+        } else if (NAME_FIELD_NAMES.has(f.name) && !name) {
+          name = (f.values?.[0] ?? '').trim() || undefined;
+        }
+      }
+
+      // Skip leads without a phone — phone is the attribution join key
+      if (!phone) continue;
+
+      results.push({
+        fbLeadId: lead.id,
+        phone,
+        name,
+        campaignId: (lead.campaign_id as string | undefined) ?? (ad.campaign?.id as string | undefined),
+        adsetId: (lead.adset_id as string | undefined) ?? (ad.adset?.id as string | undefined),
+        adId: (lead.ad_id as string | undefined) ?? (ad.id as string),
+        campaignName: ad.campaign?.name as string | undefined,
+        adName: ad.name as string | undefined,
+        createdTime: lead.created_time as string,
+      });
+    }
+  }
+
+  return results;
 }
 
 // ─── Campaign creation helpers ───────────────────────────────────────────────
