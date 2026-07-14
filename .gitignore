@@ -45,3 +45,4 @@ next-env.d.ts
 /agents-store.json
 /accounts-cache.json
 /pages-cache-*.json
+.worktrees/
