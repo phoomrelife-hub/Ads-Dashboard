@@ -3,13 +3,25 @@ import { useCallback, useEffect, useState } from "react";
 import { RuleModal } from "@/components/agents/rule-modal";
 import { RuleHistoryModal } from "@/components/agents/rule-history-modal";
 import type { PublicAgent, Rule } from "@/lib/agents/types";
+import { normalizeConditions } from "@/lib/agents/rule-eval";
 import { useAccountRanking } from "@/components/account-ranking";
 
+const DAY_LABELS = ["อา", "จ", "อ", "พ", "พฤ", "ศ", "ส"];
+
 function scheduleLabel(r: Rule) {
-  return r.schedule.kind === "daily" ? `ทุกวัน ${r.schedule.time}` : `ทุก ${r.schedule.everyMinutes}นาที`;
+  const base = r.schedule.kind === "daily" ? `ทุกวัน ${r.schedule.time}` : `ทุก ${r.schedule.everyMinutes}นาที`;
+  const tw = r.schedule.timeWindow;
+  if (!tw) return base;
+  const days = tw.days && tw.days.length > 0 && tw.days.length < 7
+    ? ` (${tw.days.map((d) => DAY_LABELS[d]).join("")})`
+    : "";
+  return `${base} · ${tw.start}-${tw.end}${days}`;
 }
 function ruleLabel(r: Rule) {
-  const cond = r.condition ? `ถ้า ${r.condition.metric} ${r.condition.op} ${r.condition.value}` : "AI";
+  const { items, logic } = normalizeConditions(r.condition);
+  const cond = items.length > 0
+    ? `ถ้า ${items.map((c) => `${c.metric} ${c.op} ${c.value}`).join(logic === "OR" ? " หรือ " : " และ ")}`
+    : "AI";
   const act = r.action.type === "set_budget" ? `ตั้งงบ ฿${r.action.dailyBudget}` : r.action.type;
   return `${cond} → ${act}`;
 }

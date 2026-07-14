@@ -66,7 +66,7 @@ export function RuleHistoryModal({ ruleId, ruleName, onClose }: { ruleId: string
                             <div className="text-[#d8deec] break-words">
                               <span className="font-semibold">{it.action}</span>{" "}
                               <span className="text-[#aab4c8]">{it.entityName}</span>
-                              {it.metric != null && it.value != null && <span className="text-[#6a7a9a]"> · {it.metric} {it.value}</span>}
+                              {it.metric != null && <span className="text-[#6a7a9a]"> · {it.metric}{it.value != null ? ` ${it.value}` : ""}</span>}
                             </div>
                             {it.note && it.status === "error" && <div className="text-[10px]" style={{ color: "#ff6b6b" }}>{it.note}</div>}
                             {it.entityId && <div className="text-[9px] text-[#3a4a6a]">{it.entityId}</div>}
