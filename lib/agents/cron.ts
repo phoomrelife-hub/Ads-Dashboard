@@ -7,19 +7,8 @@ import { executeAction, rawApply } from "./actions";
 import { runAgentTurn } from "./providers";
 import { computeTrueRoas, type TrueRoasRow } from "@/lib/leads/roas";
 import { sendRuleAlert } from "./lark-report";
-import type { RuleOp, RuleRunItem } from "./types";
-
-const TRUE_METRICS = new Set(['true_roas', 'true_cac', 'real_cvr']);
-
-function compare(a: number, op: RuleOp, b: number): boolean {
-  switch (op) {
-    case ">": return a > b;
-    case ">=": return a >= b;
-    case "<": return a < b;
-    case "<=": return a <= b;
-    case "==": return a === b;
-  }
-}
+import { normalizeConditions, conditionsMetricKind, evalConditions, withinTimeWindow } from "./rule-eval";
+import type { RuleRunItem } from "./types";
 
 function mapAction(action: any, id: string): { tool: string; args: Record<string, any>; label: string } {
   if (action.type === "activate") return { tool: "set_status", args: { id, status: "ACTIVE" }, label: "Activated" };
@@ -37,6 +26,7 @@ export function isDue(rule: any, now: number): boolean {
   if (!rule.enabled) return false;
   const schedule = parseField(rule.schedule);
   if (!schedule || typeof schedule !== 'object') return false;
+  if (!withinTimeWindow(schedule.timeWindow, now)) return false;
   if (schedule.kind === "interval") {
     const ms = (schedule.everyMinutes || 60) * 60000;
     return !rule.lastRunAt || now - rule.lastRunAt >= ms;
@@ -70,10 +60,15 @@ export async function runRule(agentId: string, ruleId: string, trigger: "schedul
   const items: RuleRunItem[] = [];
   let dryRun = rule.dryRun ?? false;
   try {
-    // structured condition (iterate every account when the target is "all")
-    if (rule.condition && typeof rule.condition === 'object') {
-      const { metric, op, value } = rule.condition;
-      const isTrueMetric = TRUE_METRICS.has(metric);
+    // structured condition(s) — one or more, combined with AND/OR (iterate every account
+    // when the target is "all"). `metric` on each RuleRunItem below is a joined label
+    // ("roas > 4 and spend > 300") rather than the matched entity's live value — a
+    // deliberate simplification to support multi-metric conditions without a per-entity
+    // value map; see the design spec for the trade-off.
+    const { items: conds, logic } = normalizeConditions(rule.condition);
+    if (conds.length > 0) {
+      const isTrueMetric = conditionsMetricKind(conds) === "true";
+      const metricLabel = conds.map((c) => `${c.metric} ${c.op} ${c.value}`).join(logic === "OR" ? " หรือ " : " และ ");
       const accountIds = targetAccount === "all"
         ? (await getAccounts()).map((a: any) => a.id)
         : [targetAccount];
@@ -96,7 +91,7 @@ export async function runRule(agentId: string, ruleId: string, trigger: "schedul
             continue;
           }
 
-          const getTrueVal = (row: TrueRoasRow): number | null => {
+          const getTrueVal = (row: TrueRoasRow, metric: string): number | null => {
             if (metric === 'true_roas') return row.trueRoas;
             if (metric === 'true_cac') return row.trueCac;
             if (metric === 'real_cvr') return row.cvr;
@@ -104,12 +99,10 @@ export async function runRule(agentId: string, ruleId: string, trigger: "schedul
           };
 
           for (const trueRow of trueResult.rows) {
-            const mv = getTrueVal(trueRow);
-            if (mv == null) continue; // no data for this entity — skip
-            if (!compare(mv, op as RuleOp, value)) continue;
+            if (!evalConditions(trueRow, conds, logic, getTrueVal)) continue;
             matched = true;
             const { tool, args, label } = mapAction(rule.action, trueRow.id);
-            const base = { entityId: trueRow.id, entityName: trueRow.name, level: rule.level, metric, value: Number(mv.toFixed(2)), action: label };
+            const base: Omit<RuleRunItem, "status"> = { entityId: trueRow.id, entityName: trueRow.name, level: rule.level, metric: metricLabel, action: label };
             if (dryRun) items.push({ ...base, status: "dry-run" });
             else {
               try { await rawApply(tool, args); items.push({ ...base, status: "applied" }); }
@@ -117,14 +110,14 @@ export async function runRule(agentId: string, ruleId: string, trigger: "schedul
             }
           }
         } else {
-          // Original FB-metric branch (byte-for-byte unchanged).
+          // FB-metric branch.
           const { rows } = await getLevel(acct, rule.level || 'ad', rule.datePreset || 'today');
-          const matches = rows.filter((r: any) => compare(Number(r[metric]) || 0, op as RuleOp, value));
+          const getFbVal = (row: any, metric: string): number => Number(row[metric]) || 0;
+          const matches = rows.filter((r: any) => evalConditions(r, conds, logic, getFbVal));
           for (const m of matches) {
             matched = true;
-            const mv = Number((Number(m[metric]) || 0).toFixed(2));
             const { tool, args, label } = mapAction(rule.action, String(m.id));
-            const base = { entityId: String(m.id), entityName: String(m.name || m.id), level: rule.level, metric, value: mv, action: label };
+            const base: Omit<RuleRunItem, "status"> = { entityId: String(m.id), entityName: String(m.name || m.id), level: rule.level, metric: metricLabel, action: label };
             if (dryRun) items.push({ ...base, status: "dry-run" });
             else {
               try { await rawApply(tool, args); items.push({ ...base, status: "applied" }); }
@@ -133,7 +126,7 @@ export async function runRule(agentId: string, ruleId: string, trigger: "schedul
           }
         }
       }
-      if (!matched) items.push({ entityName: `No ${rule.level || 'ad'}s matched ${metric} ${op} ${value}`, action: "check", status: "info" });
+      if (!matched) items.push({ entityName: `No ${rule.level || 'ad'}s matched ${metricLabel}`, action: "check", status: "info" });
     }
     // natural-language instruction (needs an agent — it's the AI brain)
     if (rule.instruction) {
@@ -158,7 +151,7 @@ export async function runRule(agentId: string, ruleId: string, trigger: "schedul
 
   const acted = items.filter((i) => i.status === "applied" || i.status === "dry-run");
   const summary = acted.length
-    ? acted.map((i) => `${i.status === "dry-run" ? "[dry] " : ""}${i.action} "${i.entityName}"${i.metric ? ` (${i.metric} ${i.value})` : ""}`).join(" · ")
+    ? acted.map((i) => `${i.status === "dry-run" ? "[dry] " : ""}${i.action} "${i.entityName}"${i.metric ? ` (${i.metric})` : ""}`).join(" · ")
     : (items[0]?.entityName || "nothing to do");
 
   await addRuleRun(ruleId, { status: dryRun ? "dry-run" : "applied", summary }).catch(() => {});

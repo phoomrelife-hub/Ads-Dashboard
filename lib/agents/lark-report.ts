@@ -93,7 +93,7 @@ export async function sendRuleAlert(
 ): Promise<void> {
   if (!larkConfigured() || applied.length === 0) return;
   const lines = applied
-    .map((i) => `• ${i.action} **${i.entityName}**${i.metric ? ` (${i.metric} ${i.value})` : ""}`)
+    .map((i) => `• ${i.action} **${i.entityName}**${i.metric ? ` (${i.metric})` : ""}`)
     .join("\n");
   const elements: unknown[] = [
     md(`กฎ **${ruleName}** ทำงานบนบัญชี \`${account}\``),
