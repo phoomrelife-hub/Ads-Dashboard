@@ -1,7 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRules, saveRule, deleteRule, newId } from "@/lib/agents/store";
+import { conditionsMetricKind, isValidTimeWindow } from "@/lib/agents/rule-eval";
 
 export const dynamic = "force-dynamic";
+
+// Shared save-time check for POST (new rule) and PUT (patch). Operates on the raw request
+// body/patch before it's merged into the stored rule shape.
+function validateRuleInput(b: any): string | null {
+  const condition = b.condition;
+  if (condition && typeof condition === "object" && Array.isArray(condition.items)) {
+    if (conditionsMetricKind(condition.items) === "mixed") {
+      return "เงื่อนไขในกฎเดียวกันต้องเป็นเมตริก Facebook ทั้งหมด หรือ TRUE metric ทั้งหมด ห้ามผสมกัน";
+    }
+  }
+  const tw = typeof b.schedule === "object" && b.schedule ? b.schedule.timeWindow : undefined;
+  if (tw && !isValidTimeWindow(tw)) {
+    return "ช่วงเวลาทำงาน (timeWindow) ต้องเป็นรูปแบบ HH:MM และวันในสัปดาห์ 0-6";
+  }
+  return null;
+}
 
 // GET /api/agents/rules?agentId=... → { rules }
 export async function GET(req: NextRequest) {
@@ -19,6 +36,8 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const b = await req.json()
+    const validationError = validateRuleInput(b);
+    if (validationError) return NextResponse.json({ error: validationError }, { status: 400 });
     const agentId = String(b.agentId || "")
     if (!agentId) return NextResponse.json({ error: "agentId is required" }, { status: 400 })
     const rule = {
@@ -45,6 +64,8 @@ export async function POST(req: NextRequest) {
 export async function PUT(req: NextRequest) {
   try {
     const { id, agentId, patch } = await req.json()
+    const validationError = validateRuleInput(patch);
+    if (validationError) return NextResponse.json({ error: validationError }, { status: 400 });
     if (!id || !agentId) return NextResponse.json({ error: "id and agentId are required" }, { status: 400 })
     const existing = await getRules(agentId)
     const rule = existing.find((r: any) => r.id === id)
