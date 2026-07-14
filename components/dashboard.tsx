@@ -334,7 +334,13 @@ export function Dashboard({ initialAccounts = [] }: { initialAccounts?: Acct[] }
     setRows((rs) => rs.map((r) => (r.id === id ? { ...r, status } : r)));
     try {
       const j = await (await fetch("/api/status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, status }) })).json();
-      if (j.error) throw new Error(j.error);
+      if (j.error) {
+        // Meta blocks the write app-wide with code 10 / subcode 1404078 when the token's app lacks
+        // write access to ads_management (Advanced Access / App Review) — hint at the real cause so
+        // it isn't mistaken for a per-ad glitch. Otherwise surface Meta's own (Thai) message.
+        const blocked = j.code === 10 || j.subcode === 1404078;
+        throw new Error(blocked ? `${j.error}\n(แอปยังไม่ได้รับสิทธิ์แก้ไขโฆษณาจาก Meta — ต้องเปิด Advanced Access ให้ ads_management)` : j.error);
+      }
     } catch (e: any) {
       setRows((rs) => rs.map((r) => (r.id === id ? { ...r, status: next ? "PAUSED" : "ACTIVE" } : r)));
       alert("เปลี่ยนสถานะไม่ได้: " + e.message);

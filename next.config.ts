@@ -1,3 +1,4 @@
+import path from "path";
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
@@ -5,6 +6,9 @@ const nextConfig: NextConfig = {
     // Type-checking runs locally and in CI; Railway's build environment has a
     // module-resolution quirk with @supabase/supabase-js that blocks deploys.
     ignoreBuildErrors: true,
+  },
+  turbopack: {
+    root: path.join(__dirname),
   },
 };
 
