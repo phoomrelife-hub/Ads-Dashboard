@@ -63,15 +63,27 @@ export type RuleOp = ">" | ">=" | "<" | "<=" | "==";
 export type RuleActionType = "pause" | "activate" | "set_budget";
 export type RuleLevel = "campaign" | "adset" | "ad";
 
+export interface RuleTimeWindow {
+  start: string;          // "HH:MM", 24h, server-local time
+  end: string;             // "HH:MM"; if end < start, the window crosses midnight
+  days?: number[];         // 0=Sun..6=Sat; omitted or empty = every day
+}
 export interface RuleSchedule {
   kind: "daily" | "interval";
-  time?: string;          // "HH:MM" (24h) for daily
-  everyMinutes?: number;  // for interval
+  time?: string;           // "HH:MM" (24h) for daily
+  everyMinutes?: number;   // for interval
+  timeWindow?: RuleTimeWindow; // optional gate on top of kind's own trigger logic
 }
 export interface RuleCondition {
   metric: RuleMetric;
   op: RuleOp;
   value: number;
+}
+// New shape stored in the `condition` column going forward. Old rows still hold a bare
+// RuleCondition (no `items` key) — lib/agents/rule-eval.ts#normalizeConditions reads both.
+export interface RuleConditionGroup {
+  items: RuleCondition[];
+  logic?: "AND" | "OR"; // default "AND"
 }
 export interface Rule {
   id: string;
@@ -82,7 +94,7 @@ export interface Rule {
   dryRun: boolean;
   level: RuleLevel;
   datePreset: string;            // metric window, e.g. "today", "last_7d"
-  condition?: RuleCondition;     // structured trigger (optional)
+  condition?: RuleCondition | RuleConditionGroup; // structured trigger (optional); either shape
   instruction?: string;          // natural-language trigger run by the agent (optional)
   action: { type: RuleActionType; dailyBudget?: number };
   schedule: RuleSchedule;
